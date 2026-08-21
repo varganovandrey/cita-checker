@@ -40,7 +40,6 @@ def setup_logging():
 
 
 def dump_state(sb, tag):
-    """Screenshot + URL + visible text, so you can see WHERE it actually is."""
     try:
         path = f"/tmp/debug_{tag}.png"
         sb.save_screenshot(path)
@@ -57,7 +56,6 @@ def dump_state(sb, tag):
 
 
 def log_options(sb, css, tag):
-    """Print every <option> label+value for a select, to find the right one."""
     try:
         opts = sb.find_elements(f"{css} option")
         logging.info(f"[{tag}] options for {css}:")
@@ -68,7 +66,6 @@ def log_options(sb, css, tag):
 
 
 def select_by_text_safe(sb, css, text, tag):
-    """Select an option by visible text; on failure dump the real options."""
     try:
         sb.wait_for_element_visible(css, timeout=15)
         sb.select_option_by_text(css, text)
@@ -90,13 +87,26 @@ def looks_blocked(sb):
 
 
 def looks_rate_limited(sb):
-    for marker in ("Too Many Requests", "too many requests", "429"):
+    # NOTE: do NOT match the bare "429" -- it appears inside WAF support IDs
+    # and causes false positives. Only match the visible 429 page text.
+    for marker in ("Too Many Requests", "too many requests"):
         try:
             if sb.is_text_visible(marker):
                 return True
         except Exception:
             pass
     return False
+
+
+def gate_check(sb, tag):
+    """Return 'rate_limited', 'blocked', or None for a page transition."""
+    if looks_rate_limited(sb):
+        dump_state(sb, f"rate_limited_{tag}")
+        return "rate_limited"
+    if looks_blocked(sb):
+        dump_state(sb, f"blocked_{tag}")
+        return "blocked"
+    return None
 
 
 try:
@@ -144,21 +154,14 @@ def check_for_appointments():
             set_random_window_size(sb)
             sb.uc_open_with_reconnect(config['url'], reconnect_time=6)
 
-            # --- gatekeepers, checked in priority order ---
-            if looks_rate_limited(sb):
-                dump_state(sb, "rate_limited")
-                find_and_kill()
-                return "rate_limited"
-
             try:
                 sb.uc_gui_click_captcha()
             except Exception:
                 pass
 
-            if looks_blocked(sb):
-                dump_state(sb, "blocked_landing")
-                find_and_kill()
-                return "blocked"
+            g = gate_check(sb, "landing")
+            if g:
+                find_and_kill(); return g
 
             # --- page 1: provincia ---
             if not select_by_text_safe(sb, "#form", config['region'], "provincia"):
@@ -167,11 +170,13 @@ def check_for_appointments():
             sb.click("#btnAceptar")
 
             # --- page 2: oficina (sede) + trámite ---
-            if looks_rate_limited(sb):
-                dump_state(sb, "rate_limited_p2"); find_and_kill(); return "rate_limited"
+            human_pause(1.0, 2.0)
+            g = gate_check(sb, "p2")
+            if g:
+                find_and_kill(); return g
             sb.wait_for_element_visible("#sede", timeout=15)
             try:
-                sb.select_option_by_value("#sede", "99")
+                sb.select_option_by_value("#sede", "99")   # 99 = cualquier oficina
             except Exception:
                 log_options(sb, "#sede", "sede")
             human_pause()
@@ -183,10 +188,9 @@ def check_for_appointments():
 
             # --- page 3: info page -> Entrar ---
             human_pause(1.5, 3.0)
-            if looks_rate_limited(sb):
-                dump_state(sb, "rate_limited_p3"); find_and_kill(); return "rate_limited"
-            if looks_blocked(sb):
-                dump_state(sb, "blocked_after_aceptar"); find_and_kill(); return "blocked"
+            g = gate_check(sb, "p3")
+            if g:
+                find_and_kill(); return g
             if not sb.is_element_present("#btnEntrar"):
                 dump_state(sb, "no_btnEntrar"); find_and_kill(); return "error"
             sb.click("#btnEntrar")
@@ -195,12 +199,13 @@ def check_for_appointments():
             sb.wait_for_element_visible("#rdbTipoDocNie", timeout=15)
             sb.find_element(By.ID, "rdbTipoDocNie").click()
             human_pause(0.3, 0.9)
-            sb.type("#txtIdCitado", config['idCitadoValue'])
+            sb.type("#txtIdCitado", config['idCitadoValue'])      # NIE: Z2405206D
             human_pause(0.3, 0.9)
-            sb.type("#txtDesCitado", config['desCitadoValue'])
+            sb.type("#txtDesCitado", config['desCitadoValue'])    # MAHMOUD HAMED
             human_pause(0.3, 0.9)
 
             if sb.is_element_present("#txtPaisNac"):
+                # set "LIBANO" in values.json (Spanish label), not "Lebanon"
                 select_by_text_safe(sb, "#txtPaisNac", config['paisNacValue'], "pais")
                 human_pause(0.3, 0.9)
 
@@ -210,8 +215,9 @@ def check_for_appointments():
             human_pause(1.5, 3.0)
 
             # --- result ---
-            if looks_rate_limited(sb):
-                dump_state(sb, "rate_limited_result"); find_and_kill(); return "rate_limited"
+            g = gate_check(sb, "result")
+            if g:
+                find_and_kill(); return g
             if sb.is_text_visible("En este momento no hay citas disponibles"):
                 logging.info("No available appointments. Retrying later.")
                 find_and_kill()
@@ -240,27 +246,24 @@ def check_for_appointments():
 # ---------------------------------------------------------------------------
 def main():
     setup_logging()
-    rl_backoff = 1800  # rate-limit cooldown starts at 30 min, doubles up to 2 h
+    rl_backoff = 1800  # 429 cooldown: 30 min, doubling up to 2 h
     while True:
         result = check_for_appointments()
 
         if result == "manual_check_needed":
             input("Press Enter to exit after your manual check...")
             break
-
         elif result == "rate_limited":
             wait = min(rl_backoff, 7200) + random.randint(0, 300)
             logging.warning(f"Rate limited (429). Cooling down {wait}s.")
             time.sleep(wait)
             rl_backoff = min(rl_backoff * 2, 7200)
-
         elif result == "blocked":
-            wait = random.randint(900, 1800)  # 15-30 min for WAF blocks
-            logging.info(f"Blocked by WAF. Sleeping {wait}s.")
+            wait = random.randint(900, 1800)  # WAF block: 15-30 min
+            logging.info(f"WAF block. Sleeping {wait}s.")
             time.sleep(wait)
-
-        else:  # retry / error -> we're getting through, poll gently
-            rl_backoff = 1800  # reset the escalation once clean again
+        else:  # retry / error
+            rl_backoff = 1800
             wait = random.randint(300, 480)  # 5-8 min
             logging.info(f"Sleeping {wait}s before next attempt.")
             time.sleep(wait)
