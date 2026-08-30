@@ -422,6 +422,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
             chunk = int(cfg.get("sweep_chunk_size", 0) or 0)
             chunk_pause = int(cfg.get("sweep_chunk_pause_minutes", 15))
+            batches = max(1, -(-len(sweep) // chunk)) if chunk else 1
             for index, office in enumerate(sweep):
                 if index:
                     # long unbroken runs get rejected; short batches with a real
@@ -429,6 +430,15 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     if chunk and index % chunk == 0:
                         logger.info("Batch of %d done, pausing %d min before %s",
                                     chunk, chunk_pause, office)
+                        # a silent 85-minute sweep is indistinguishable from a
+                        # hung process, so report after every batch
+                        if notify_cfg.get("sweep_progress", True) and not verify:
+                            done = index // chunk
+                            notify.send_telegram(
+                                f"Порция {done} из {batches}: проверено {checked} офисов, "
+                                f"{'слотов нет' if not announced else 'есть находки'}. "
+                                f"Продолжу через {chunk_pause} мин."
+                            )
                         time.sleep(chunk_pause * 60)
                     else:
                         gap = random.randint(*cfg.get("office_switch_seconds", [25, 70]))

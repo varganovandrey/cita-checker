@@ -87,7 +87,8 @@
     "repeat_cooldown_minutes": 60,
     "unknown_cooldown_hours": 6,
     "sweep_start": true,
-    "sweep_summary": true
+    "sweep_summary": true,
+    "sweep_progress": true
   },
   "blocked_backoff_minutes": [
     90,
