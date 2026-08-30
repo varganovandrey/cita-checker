@@ -420,11 +420,20 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     f"Обход начался: {len(sweep)} офисов, ориентировочно {estimate} мин."
                 )
 
+            chunk = int(cfg.get("sweep_chunk_size", 0) or 0)
+            chunk_pause = int(cfg.get("sweep_chunk_pause_minutes", 15))
             for index, office in enumerate(sweep):
                 if index:
-                    gap = random.randint(*cfg.get("office_switch_seconds", [25, 70]))
-                    logger.info("Next office in %d s: %s", gap, office)
-                    time.sleep(gap)
+                    # long unbroken runs get rejected; short batches with a real
+                    # break between them have gone through cleanly
+                    if chunk and index % chunk == 0:
+                        logger.info("Batch of %d done, pausing %d min before %s",
+                                    chunk, chunk_pause, office)
+                        time.sleep(chunk_pause * 60)
+                    else:
+                        gap = random.randint(*cfg.get("office_switch_seconds", [25, 70]))
+                        logger.info("Next office in %d s: %s", gap, office)
+                        time.sleep(gap)
                 try:
                     result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
                     consecutive_errors = 0 if result.status != "error" else consecutive_errors + 1
@@ -479,6 +488,32 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
 
 SURVEY_PATH_NAME = "offices_survey.json"
+
+
+# below Windows' ephemeral range (49152+), so a stray outbound connection
+# cannot squat on it between runs
+SINGLETON_PORT = 43117
+_singleton_socket = None
+
+
+def claim_singleton() -> bool:
+    """Bind a loopback port as a mutex so only one daemon runs.
+
+    A socket beats a PID file here: it cannot go stale after a crash or a
+    reboot, which matters when the Task Scheduler fires the same command daily.
+    """
+    global _singleton_socket
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", SINGLETON_PORT))
+        sock.listen(1)
+    except OSError:
+        sock.close()
+        return False
+    _singleton_socket = sock  # held for the process lifetime
+    return True
 
 
 def run_discovery(cfg: dict) -> int:
@@ -581,6 +616,11 @@ def main() -> int:
     if args.offices:
         override = [o.strip() for o in args.offices.split(",") if o.strip()]
         logger.info("One-off sweep over %d offices", len(override))
+
+    daemon = not (args.once or args.verify or override)
+    if daemon and not claim_singleton():
+        logger.info("Another monitor instance is already running - exiting")
+        return 0
 
     try:
         return run_loop(cfg, once=args.once or bool(override), verify=args.verify,

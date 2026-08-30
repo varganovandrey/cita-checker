@@ -92,5 +92,7 @@
   "blocked_backoff_minutes": [
     90,
     180
-  ]
+  ],
+  "sweep_chunk_size": 5,
+  "sweep_chunk_pause_minutes": 15
 }
