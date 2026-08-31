@@ -290,7 +290,19 @@ def select_option_containing(page: Page, selectors: list[str], needle: str) -> O
             # approach the control first: the change event alone looks synthetic
             human_move_to(page, loc)
             page.wait_for_timeout(random.randint(120, 400))
-            loc.select_option(value=options.nth(index).get_attribute("value"))
+            chosen = options.nth(index).get_attribute("value")
+            loc.select_option(value=chosen)
+            # verify it stuck: a late AJAX repopulation can wipe the choice
+            page.wait_for_timeout(250)
+            try:
+                if loc.input_value() != chosen:
+                    logger.warning("Selection of '%s' in %s was reset, retrying", labels[index], sel)
+                    page.wait_for_timeout(1200)
+                    loc.select_option(value=chosen)
+                    if loc.input_value() != chosen:
+                        raise LookupError(f"could not keep '{labels[index]}' selected in {sel}")
+            except PWError:
+                pass
             return labels[index]
         except LookupError:
             raise
@@ -326,6 +338,29 @@ def type_into(page: Page, selectors: list[str], value: str, typing_delay_ms: lis
         except (PWError, PWTimeout):
             continue
     return False
+
+
+def wait_options_settled(page: Page, selector: str, timeout: int = 12000) -> int:
+    """Wait until a <select> stops being repopulated, return its option count.
+
+    Choosing an office fires cargaTramites(), which rebuilds the tramite list
+    over AJAX. Selecting a tramite before that response lands gets the choice
+    silently wiped, and the form then submits with no tramite at all.
+    """
+    deadline = time.monotonic() + timeout / 1000
+    previous, stable_since = -1, 0.0
+    while time.monotonic() < deadline:
+        try:
+            count = page.locator(selector).first.locator("option").count()
+        except PWError:
+            count = -1
+        if count == previous and count > 1:
+            if time.monotonic() - stable_since >= 0.8:
+                return count
+        else:
+            previous, stable_since = count, time.monotonic()
+        page.wait_for_timeout(200)
+    return previous
 
 
 def wait_any(page: Page, selectors: list[str], timeout: int = 10000) -> Optional[str]:
@@ -601,6 +636,11 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
         logger.warning("Office option not found on tramite page: %s", exc)
     # let cargaTramites() finish repopulating the tramite select
     page.wait_for_timeout(random.randint(1200, 2200))
+
+    # the office choice triggers cargaTramites(); selecting a tramite before that
+    # AJAX lands gets the choice wiped and submits an empty tramite
+    settled = wait_options_settled(page, r"#tramiteGrupo\[0\]")
+    logger.debug("Tramite list settled at %d options", settled)
 
     # 2b. Tramite. Selecting an office repopulates this list, and offices differ
     # in what they offer - e.g. Ciudad Lineal only does CARTA DE INVITACIÓN. An
