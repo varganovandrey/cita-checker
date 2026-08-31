@@ -13,6 +13,7 @@ Console and log output is English ASCII only. Telegram text may be Russian.
 import argparse
 import datetime as dt
 import hashlib
+import html
 import json
 import logging
 import logging.handlers
@@ -307,7 +308,8 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             notify.local_alert("Cita Madrid", message)
         if notify_cfg.get("telegram", True):
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
-            notify.send_telegram(f"<b>Свободна сита!</b>\n{office}\n{shown}", photo)
+            notify.send_telegram(
+                f"<b>Свободна сита!</b>\n{html.escape(office)}\n{html.escape(shown)}", photo)
         seen[office] = {"hash": digest, "at": now.isoformat()}
         return True
 
@@ -344,10 +346,10 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
             notify.send_telegram(
                 "<b>Незнакомый экран на сайте</b>\n"
-                f"{office}\n"
+                f"{html.escape(office)}\n"
                 "Возможно, изменилась вёрстка — или это слоты, которых монитор "
                 "не распознал. Загляните в браузер и в debug/.\n"
-                f"<code>{result.detail[:200]}</code>",
+                f"<code>{html.escape(result.detail[:200])}</code>",
                 photo,
             )
             state["unknown_notified_at"] = now.isoformat()

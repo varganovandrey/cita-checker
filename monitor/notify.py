@@ -8,6 +8,7 @@ import ctypes
 import json
 import logging
 import mimetypes
+import re
 import os
 import threading
 import urllib.error
@@ -52,11 +53,18 @@ def send_telegram(text: str, photo: Optional[Path] = None) -> bool:
     return ok
 
 
-def _post_message(token: str, chat_id: str, text: str) -> bool:
+def _post_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+    """Send one message; on an HTML parse failure, resend as plain text.
+
+    Alerts carry error text verbatim, and Playwright's messages contain things
+    like "<ws connecting>". Unescaped, those make Telegram reject the whole
+    message with a 400 - losing the alert at the exact moment it matters most.
+    """
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    ).encode("utf-8")
+    fields = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        fields["parse_mode"] = parse_mode
+    data = urllib.parse.urlencode(fields).encode("utf-8")
     try:
         with urllib.request.urlopen(url, data=data, timeout=TELEGRAM_TIMEOUT) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -65,9 +73,19 @@ def _post_message(token: str, chat_id: str, text: str) -> bool:
                 return False
             logger.info("Telegram message sent")
             return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400 and parse_mode:
+            logger.warning("Telegram rejected the markup, resending as plain text")
+            return _post_message(token, chat_id, _strip_tags(text), parse_mode="")
+        logger.warning("Telegram sendMessage failed: %s", exc)
+        return False
     except (urllib.error.URLError, OSError, ValueError) as exc:
         logger.warning("Telegram sendMessage failed: %s", exc)
         return False
+
+
+def _strip_tags(text: str) -> str:
+    return re.sub(r"<[^>]{0,40}>", "", text)
 
 
 def _post_photo(token: str, chat_id: str, photo: Path, caption: Optional[str]) -> bool:
