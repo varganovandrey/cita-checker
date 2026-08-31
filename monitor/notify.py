@@ -31,12 +31,14 @@ def _telegram_creds() -> Optional[tuple[str, str]]:
     return token, chat_id
 
 
-def send_telegram(text: str, photo: Optional[Path] = None) -> bool:
+def send_telegram(text: str, photo: Optional[Path] = None, silent: bool = False) -> bool:
     """Send a Telegram message, optionally with a photo attached.
 
     Args:
         text: Message text (HTML parse mode).
         photo: Optional path to an image to send via sendPhoto.
+        silent: Deliver without a notification sound. For routine progress
+            chatter, so the alerts that matter still make the phone ring.
 
     Returns:
         True if the text message was delivered.
@@ -47,13 +49,14 @@ def send_telegram(text: str, photo: Optional[Path] = None) -> bool:
         return False
     token, chat_id = creds
 
-    ok = _post_message(token, chat_id, text)
+    ok = _post_message(token, chat_id, text, silent=silent)
     if photo is not None and photo.exists():
         _post_photo(token, chat_id, photo, caption=None)
     return ok
 
 
-def _post_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+def _post_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML",
+                  silent: bool = False) -> bool:
     """Send one message; on an HTML parse failure, resend as plain text.
 
     Alerts carry error text verbatim, and Playwright's messages contain things
@@ -64,6 +67,8 @@ def _post_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML")
     fields = {"chat_id": chat_id, "text": text}
     if parse_mode:
         fields["parse_mode"] = parse_mode
+    if silent:
+        fields["disable_notification"] = "true"
     data = urllib.parse.urlencode(fields).encode("utf-8")
     try:
         with urllib.request.urlopen(url, data=data, timeout=TELEGRAM_TIMEOUT) as resp:
@@ -76,7 +81,7 @@ def _post_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML")
     except urllib.error.HTTPError as exc:
         if exc.code == 400 and parse_mode:
             logger.warning("Telegram rejected the markup, resending as plain text")
-            return _post_message(token, chat_id, _strip_tags(text), parse_mode="")
+            return _post_message(token, chat_id, _strip_tags(text), parse_mode="", silent=silent)
         logger.warning("Telegram sendMessage failed: %s", exc)
         return False
     except (urllib.error.URLError, OSError, ValueError) as exc:

@@ -445,7 +445,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                             notify.send_telegram(
                                 f"Порция {done} из {batches}: проверено {checked} офисов, "
                                 f"{'слотов нет' if not announced else 'есть находки'}. "
-                                f"Продолжу через {chunk_pause} мин."
+                                f"Продолжу через {chunk_pause} мин.",
+                                silent=True,  # routine chatter must not buzz the phone
                             )
                         time.sleep(chunk_pause * 60)
                     else:
