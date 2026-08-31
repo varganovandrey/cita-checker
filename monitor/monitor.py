@@ -238,7 +238,12 @@ def offices_for_cycle(cfg: dict, state: dict) -> list[str]:
     start = int(state.get("office_rotation", 0)) % len(extra)
     picked = [extra[(start + i) % len(extra)] for i in range(min(per_cycle, len(extra)))]
     state["office_rotation"] = (start + len(picked)) % len(extra)
-    return [primary, *picked]
+    sweep = [primary, *picked]
+    # a sweep runs for the better part of an hour, so the opening broad check is
+    # stale by the end; repeat it last to catch anything released meanwhile
+    if cfg.get("recheck_primary_last", True):
+        sweep.append(primary)
+    return sweep
 
 
 def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
