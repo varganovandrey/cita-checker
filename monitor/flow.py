@@ -244,12 +244,13 @@ def click_any(page: Page, selectors: list[str], timeout: int = 6000) -> Optional
             loc = page.locator(sel).first
             if loc.count() and loc.is_visible():
                 loc.scroll_into_view_if_needed(timeout=2000)
-                point = human_move_to(page, loc)
+                # move like a human, but let Playwright deliver the click: a raw
+                # mouse.click at coordinates hits whatever is physically on top,
+                # and this site floats a cookie banner over the buttons. Both
+                # paths dispatch trusted CDP input, so realism is unaffected.
+                human_move_to(page, loc)
                 page.wait_for_timeout(random.randint(60, 220))
-                if point:
-                    page.mouse.click(point[0], point[1])
-                else:
-                    loc.click(timeout=timeout)
+                loc.click(timeout=timeout)
                 page.wait_for_load_state("domcontentloaded")
                 return sel
         except (PWError, PWTimeout):
@@ -721,6 +722,17 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
     txt = page_text(page)
     if any(m in txt for m in NO_SLOTS_MARKERS):
         return CheckResult(status="no_slots")
+
+    # After "Solicitar Cita" the next screen takes a moment to arrive. Deciding
+    # what it is too early makes the contact form invisible and the walk then
+    # falls through to the dates loop on a page that has not loaded yet.
+    settle_deadline = time.monotonic() + 10
+    while time.monotonic() < settle_deadline:
+        if page.locator("#txtTelefonoCitado").count():
+            break
+        if any(m in page_text(page) for m in NO_SLOTS_MARKERS):
+            break
+        page.wait_for_timeout(300)
 
     # 5b. "Paso 2 de 5" - contact details. This screen only appears when the
     # request got past availability, so reaching it is a good sign. The second

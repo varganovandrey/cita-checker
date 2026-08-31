@@ -421,6 +421,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             sweep_started = dt.datetime.now(tz)
             announced = False
             checked = 0
+            errors_this_sweep = 0
             if notify_cfg.get("sweep_start", True) and not verify:
                 estimate = round(len(sweep) * 75 / 60)
                 notify.send_telegram(
@@ -470,8 +471,17 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     checked += 1
                 save_state(state)
                 last_status = result.status
-                if result.status in ("blocked", "error"):
-                    break  # do not walk the rest of the sweep into a wall
+                if result.status == "blocked":
+                    break  # the site is refusing; walking on only deepens it
+                if result.status == "error":
+                    # one odd screen is not a reason to abandon the whole day:
+                    # a scheduled sweep has no second chance until tomorrow
+                    errors_this_sweep += 1
+                    if errors_this_sweep >= int(cfg.get("sweep_error_budget", 3)):
+                        logger.warning("Too many odd screens this sweep (%d), stopping early",
+                                       errors_this_sweep)
+                        break
+                    logger.info("Odd screen at %s, moving on to the next office", office)
 
             if notify_cfg.get("sweep_summary", True) and not verify and not announced:
                 minutes = round((dt.datetime.now(tz) - sweep_started).total_seconds() / 60)
