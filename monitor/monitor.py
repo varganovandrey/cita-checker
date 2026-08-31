@@ -484,6 +484,11 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                         break
                     logger.info("Odd screen at %s, moving on to the next office", office)
 
+            # Free the machine between sweeps - but never when slots were found:
+            # that tab is deliberately parked on the dates screen for booking.
+            if cfg.get("close_browser_after_sweep", True) and not announced and not verify:
+                flow.close_browser(browser_holder.pop("browser", None))
+
             if notify_cfg.get("sweep_summary", True) and not verify and not announced:
                 minutes = round((dt.datetime.now(tz) - sweep_started).total_seconds() / 60)
                 cut = "" if checked == len(sweep) else f" (обход прерван: {last_status})"

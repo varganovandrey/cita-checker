@@ -97,5 +97,6 @@
   "sweep_chunk_size": 5,
   "sweep_chunk_pause_minutes": 15,
   "recheck_primary_last": true,
-  "sweep_error_budget": 3
+  "sweep_error_budget": 3,
+  "close_browser_after_sweep": true
 }

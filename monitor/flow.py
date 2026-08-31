@@ -104,6 +104,37 @@ def _cdp_alive(cdp_url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+_launched: dict[str, Optional[subprocess.Popen]] = {"proc": None}
+
+
+def close_browser(browser: Optional[Browser]) -> None:
+    """Disconnect, and shut the browser down if this process started it.
+
+    A browser the user had already running on the debug port is left alone -
+    only one we launched ourselves gets terminated.
+    """
+    try:
+        if browser is not None and browser.is_connected():
+            browser.close()
+    except PWError:
+        pass
+    proc = _launched["proc"]
+    if proc is None:
+        logger.debug("Browser was not started by us, leaving it running")
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+        logger.info("Browser closed")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        logger.warning("Browser did not exit, killed")
+    except OSError as exc:
+        logger.warning("Could not close the browser: %s", exc)
+    finally:
+        _launched["proc"] = None
+
+
 def launch_browser(browser_cfg: dict) -> None:
     """Start Brave/Chrome with a remote debugging port and a dedicated profile."""
     binary = _find_browser(browser_cfg.get("browser_path"))
@@ -113,7 +144,7 @@ def launch_browser(browser_cfg: dict) -> None:
     user_data_dir = browser_cfg["user_data_dir"]
     Path(user_data_dir).mkdir(parents=True, exist_ok=True)
     logger.info("Launching %s (port %s, profile %s)", Path(binary).name, port, user_data_dir)
-    subprocess.Popen(
+    _launched["proc"] = subprocess.Popen(
         [
             binary,
             f"--remote-debugging-port={port}",
