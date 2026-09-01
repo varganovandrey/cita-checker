@@ -104,35 +104,70 @@ def _cdp_alive(cdp_url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-_launched: dict[str, Optional[subprocess.Popen]] = {"proc": None}
+_launched: dict = {"proc": None, "cdp_url": None, "user_data_dir": None}
 
 
-def close_browser(browser: Optional[Browser]) -> None:
-    """Disconnect, and shut the browser down if this process started it.
+def _kill_profile_browsers(user_data_dir: str) -> int:
+    """Kill browser process trees started against our own profile directory.
 
-    A browser the user had already running on the debug port is left alone -
-    only one we launched ourselves gets terminated.
+    Matched on the command line, so the user's everyday browser - which runs on
+    a different profile - is never touched.
+    """
+    # PowerShell's -like takes backslashes literally - escaping them makes the
+    # pattern stop matching. Only the single quote needs doubling.
+    pattern = user_data_dir.replace("'", "''")
+    script = (
+        "Get-CimInstance Win32_Process | "
+        f"Where-Object {{ $_.CommandLine -like '*{pattern}*' }} | "
+        "Select-Object -ExpandProperty ProcessId"
+    )
+    try:
+        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, timeout=30)
+        pids = [line.strip() for line in out.stdout.splitlines() if line.strip().isdigit()]
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Could not enumerate browser processes: %s", exc)
+        return 0
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", pid, "/T", "/F"],
+                       capture_output=True, check=False)
+    if pids:
+        logger.info("Killed %d stale browser process(es) on our profile", len(pids))
+    return len(pids)
+
+
+def close_browser(browser: Optional[Browser], browser_cfg: dict) -> None:
+    """Disconnect and shut down the browser running on our profile.
+
+    Ownership is decided by the profile directory, not by whether this process
+    happens to hold the Popen handle. A restarted daemon attaches to a browser
+    it did not launch, and treating that as "someone else's" is how zombies
+    accumulate: terminate() reaches only the spawned process, while the browser
+    it started keeps the debug port open, answering HTTP but refusing
+    websockets, so the next run cannot attach.
     """
     try:
         if browser is not None and browser.is_connected():
             browser.close()
     except PWError:
         pass
+
     proc = _launched["proc"]
-    if proc is None:
-        logger.debug("Browser was not started by us, leaving it running")
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=10)
-        logger.info("Browser closed")
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        logger.warning("Browser did not exit, killed")
-    except OSError as exc:
-        logger.warning("Could not close the browser: %s", exc)
-    finally:
-        _launched["proc"] = None
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        except OSError as exc:
+            logger.warning("Could not close the browser: %s", exc)
+        finally:
+            _launched["proc"] = None
+
+    cdp_url = browser_cfg["cdp_url"]
+    if _cdp_alive(cdp_url, timeout=1.5):
+        _kill_profile_browsers(browser_cfg["user_data_dir"])
+    logger.info("Browser closed")
 
 
 def launch_browser(browser_cfg: dict) -> None:
@@ -144,6 +179,8 @@ def launch_browser(browser_cfg: dict) -> None:
     user_data_dir = browser_cfg["user_data_dir"]
     Path(user_data_dir).mkdir(parents=True, exist_ok=True)
     logger.info("Launching %s (port %s, profile %s)", Path(binary).name, port, user_data_dir)
+    _launched["cdp_url"] = browser_cfg["cdp_url"]
+    _launched["user_data_dir"] = user_data_dir
     _launched["proc"] = subprocess.Popen(
         [
             binary,
@@ -177,8 +214,21 @@ def get_browser(pw: Playwright, browser_cfg: dict) -> Browser:
             raise ChromeUnavailable(f"CDP endpoint {cdp_url} did not come up after launch")
     try:
         browser = pw.chromium.connect_over_cdp(cdp_url, timeout=5000)
-    except PWError as exc:
-        raise ChromeUnavailable(f"connect_over_cdp failed: {exc}") from exc
+    except PWError as first_error:
+        logger.warning("CDP attach failed (%s); assuming a stale browser",
+                       str(first_error).splitlines()[0][:90])
+        _kill_profile_browsers(browser_cfg["user_data_dir"])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and _cdp_alive(cdp_url, timeout=1):
+            time.sleep(0.5)
+        launch_browser(browser_cfg)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not _cdp_alive(cdp_url):
+            time.sleep(0.5)
+        try:
+            browser = pw.chromium.connect_over_cdp(cdp_url, timeout=8000)
+        except PWError as exc:
+            raise ChromeUnavailable(f"connect_over_cdp failed after relaunch: {exc}") from exc
     logger.info("Attached to Chrome via CDP (%s)", cdp_url)
     return browser
 
