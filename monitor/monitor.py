@@ -179,6 +179,15 @@ def next_run_at(cfg: dict, now: dt.datetime) -> Optional[dt.datetime]:
     return None
 
 
+def _within_quick_hours(cfg: dict, moment: dt.datetime) -> bool:
+    """Whether quick checks are allowed at this time. Empty config means always."""
+    hours = cfg.get("quick_check_hours") or []
+    if len(hours) != 2:
+        return True
+    start, end = _parse_hhmm(hours[0]), _parse_hhmm(hours[1])
+    return start <= moment.time() < end
+
+
 def next_sleep_seconds(cfg: dict, now: dt.datetime) -> int:
     sched = cfg["schedule"]
     if in_active_window(cfg, now):
@@ -365,6 +374,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
     tz = ZoneInfo(cfg["schedule"]["timezone"])
     scheduled = bool(cfg["schedule"].get("run_at"))
     pending: Optional[dt.datetime] = None
+    next_quick: Optional[dt.datetime] = None
     state = load_state()
     browser_holder: dict = {}
     consecutive_errors = 0
@@ -373,6 +383,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
     with sync_playwright() as pw:
         while True:
             now = dt.datetime.now(tz)
+            is_quick = False
 
             blocked_until = state.get("blocked_until")
             if blocked_until and not once and not verify:
@@ -392,17 +403,46 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     pending = next_run_at(cfg, now)
                 if pending is None:
                     raise SystemExit("schedule.run_at is set but yields no run time")
-                wait = int((pending - now).total_seconds())
+                # Between full sweeps, poke the broad office on its own cadence.
+                # A full sweep runs for ~48 min, so a quick check that started
+                # just before one would still be running when it begins - hence
+                # the guard band rather than a bare comparison of due times.
+                quick_every = int(cfg.get("quick_check_minutes", 0) or 0)
+                if quick_every and next_quick is None:
+                    next_quick = now + dt.timedelta(minutes=quick_every)
+                if next_quick is not None and not _within_quick_hours(cfg, next_quick):
+                    # slots are released during office hours; checks at 03:00 are
+                    # load without upside
+                    next_quick += dt.timedelta(minutes=quick_every)
+
+                target, is_quick = pending, False
+                if next_quick is not None and next_quick < pending:
+                    guard = dt.timedelta(minutes=int(cfg.get("quick_check_guard_minutes", 5)))
+                    if next_quick + guard >= pending:
+                        # too close to the sweep: let the sweep have it
+                        next_quick = None
+                        logger.info("Quick check skipped, full sweep is imminent")
+                    else:
+                        target, is_quick = next_quick, True
+
+                wait = int((target - now).total_seconds())
                 if wait > 0:
                     nap = min(wait, 1800)  # wake periodically so Ctrl+C stays responsive
-                    logger.info("Next sweep at %s %s (in %d min), sleeping %d min",
-                                pending.strftime("%a %H:%M"), cfg["schedule"]["timezone"],
+                    logger.info("Next %s at %s %s (in %d min), sleeping %d min",
+                                "quick check" if is_quick else "sweep",
+                                target.strftime("%a %H:%M"), cfg["schedule"]["timezone"],
                                 wait // 60, max(1, nap // 60))
                     save_state(state)
                     time.sleep(nap)
                     continue
-                logger.info("Scheduled sweep starting (%s)", pending.strftime("%a %H:%M"))
-                pending = None
+
+                if is_quick:
+                    logger.info("Quick check starting (%s)", target.strftime("%a %H:%M"))
+                    next_quick = now + dt.timedelta(minutes=quick_every)
+                else:
+                    logger.info("Scheduled sweep starting (%s)", pending.strftime("%a %H:%M"))
+                    pending = None
+                    next_quick = None  # re-armed once the sweep is done
 
             elif not once and not verify and not in_active_window(cfg, now):
                 nap = next_sleep_seconds(cfg, now)
@@ -413,8 +453,11 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
             # "Cualquier oficina" first, then a rotating slice of specific
             # offices ordered nearest-first
-            sweep = (offices_override or
-                     ([cfg["office"]] if verify else offices_for_cycle(cfg, state)))
+            if is_quick:
+                sweep = [cfg["office"]]
+            else:
+                sweep = (offices_override or
+                         ([cfg["office"]] if verify else offices_for_cycle(cfg, state)))
             result = CheckResult(status="error", detail="no check ran")
 
             notify_cfg = cfg["notify"]
@@ -422,7 +465,9 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             announced = False
             checked = 0
             errors_this_sweep = 0
-            if notify_cfg.get("sweep_start", True) and not verify:
+            # a half-hourly check that announced itself would be 48 messages a
+            # day; it stays quiet unless it actually finds or breaks something
+            if notify_cfg.get("sweep_start", True) and not verify and not is_quick:
                 estimate = round(len(sweep) * 75 / 60)
                 notify.send_telegram(
                     f"Обход начался: {len(sweep)} офисов, ориентировочно {estimate} мин."
@@ -489,7 +534,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             if cfg.get("close_browser_after_sweep", True) and not announced and not verify:
                 flow.close_browser(browser_holder.pop("browser", None))
 
-            if notify_cfg.get("sweep_summary", True) and not verify and not announced:
+            if (notify_cfg.get("sweep_summary", True) and not verify
+                    and not announced and not is_quick):
                 minutes = round((dt.datetime.now(tz) - sweep_started).total_seconds() / 60)
                 cut = "" if checked == len(sweep) else f" (обход прерван: {last_status})"
                 notify.send_telegram(
