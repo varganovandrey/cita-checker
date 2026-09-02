@@ -357,11 +357,17 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         due = last is None or (now - dt.datetime.fromisoformat(last)) > quiet
         if due and notify_cfg.get("telegram", True):
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
+            # Only a real page is worth opening the browser for; a connection
+            # failure leaves nothing to look at, and saying otherwise sends the
+            # reader to a window that was never there.
+            where = ("Вкладка оставлена открытой, плюс дамп в debug/."
+                     if result.screenshot_path else
+                     "Страницы нет — соединение не состоялось.")
             notify.send_telegram(
                 "<b>Незнакомый экран на сайте</b>\n"
                 f"{html.escape(office)}\n"
                 "Возможно, изменилась вёрстка — или это слоты, которых монитор "
-                "не распознал. Загляните в браузер и в debug/.\n"
+                f"не распознал. {where}\n"
                 f"<code>{html.escape(result.detail[:200])}</code>",
                 photo,
             )
@@ -488,6 +494,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             announced = False
             checked = 0
             errors_this_sweep = 0
+            inspectable = False
             # a half-hourly check that announced itself would be 48 messages a
             # day; it stays quiet unless it actually finds or breaks something
             if notify_cfg.get("sweep_start", True) and not verify and not is_quick:
@@ -538,6 +545,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 announced |= handle_result(result, cfg, state, now, office=office)
                 if result.status in ("slots", "no_slots", "not_offered"):
                     checked += 1
+                if result.status == "error" and result.screenshot_path:
+                    inspectable = True
                 save_state(state)
                 last_status = result.status
                 if result.status == "blocked":
@@ -554,7 +563,10 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
             # Free the machine between sweeps - but never when slots were found:
             # that tab is deliberately parked on the dates screen for booking.
-            if cfg.get("close_browser_after_sweep", True) and not announced and not verify:
+            # keep the window when there is something to look at: slots to book,
+            # or a page the monitor could not classify
+            if (cfg.get("close_browser_after_sweep", True)
+                    and not announced and not inspectable and not verify):
                 flow.close_browser(browser_holder.pop("browser", None), cfg["browser"])
 
             if (notify_cfg.get("sweep_summary", True) and not verify
