@@ -101,5 +101,13 @@
   "close_browser_after_sweep": true,
   "quick_check_minutes": 0,
   "quick_check_guard_minutes": 5,
-  "quick_check_hours": []
+  "quick_check_hours": [],
+  "vpn": {
+    "check_before_run": true,
+    "disable_before_run": true,
+    "skip_run_if_active": true,
+    "adapter_name": "",
+    "service_name": "",
+    "stop_task_name": ""
+  }
 }

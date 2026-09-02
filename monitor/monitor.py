@@ -29,6 +29,7 @@ from playwright.sync_api import sync_playwright
 
 import flow
 import notify
+import vpn
 from flow import CheckResult, ChromeUnavailable
 
 BASE_DIR = Path(__file__).parent
@@ -453,6 +454,25 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
             # "Cualquier oficina" first, then a rotating slice of specific
             # offices ordered nearest-first
+            # The site is judged from our IP; a VPN exit node replaces the
+            # residential address the whole approach depends on.
+            clear, vpn_note = vpn.ensure_off(cfg.get("vpn", {}))
+            if not clear:
+                logger.warning("Run skipped: %s", vpn_note)
+                if not state.get("vpn_notified"):
+                    notify.send_telegram(
+                        "Проверка пропущена: включён VPN.\n"
+                        f"{html.escape(vpn_note)}\n"
+                        "Отключите туннель — монитор должен ходить с домашнего IP."
+                    )
+                    state["vpn_notified"] = True
+                save_state(state)
+                if once or verify:
+                    return 3
+                continue
+            if state.get("vpn_notified"):
+                state["vpn_notified"] = False
+
             if is_quick:
                 sweep = [cfg["office"]]
             else:
