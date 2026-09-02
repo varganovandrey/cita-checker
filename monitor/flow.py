@@ -78,6 +78,8 @@ class CheckResult:
     dates: list[tuple[dt.date, str]] = field(default_factory=list)
     detail: str = ""
     screenshot_path: Optional[Path] = None
+    # a real page was on screen - as opposed to a connection that never landed
+    has_page: bool = False
 
 
 class ChromeUnavailable(RuntimeError):
@@ -276,16 +278,28 @@ def page_text(page: Page) -> str:
 
 
 def dump(page: Page, tag: str) -> Optional[Path]:
-    """Dump HTML + screenshot into debug/. Returns the screenshot path."""
+    """Dump HTML + screenshot into debug/. Returns the screenshot path.
+
+    The two are saved independently: a failed screenshot used to take the HTML
+    with it and leave the alert with no picture, which is the one thing that
+    makes an unreadable page diagnosable. A full-page capture can fail on a long
+    or still-loading page, so the visible viewport is tried as a fallback.
+    """
     DEBUG_DIR.mkdir(exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     png = DEBUG_DIR / f"{stamp}_{tag}.png"
     try:
         (DEBUG_DIR / f"{stamp}_{tag}.html").write_text(page.content(), encoding="utf-8")
-        page.screenshot(path=str(png), full_page=True)
-        return png
-    except PWError:
-        return None
+    except (PWError, OSError) as exc:
+        logger.debug("Could not save HTML for %s: %s", tag, exc)
+    for full_page in (True, False):
+        try:
+            page.screenshot(path=str(png), full_page=full_page, timeout=15000)
+            return png
+        except PWError as exc:
+            logger.debug("Screenshot (full_page=%s) failed: %s", full_page, str(exc)[:80])
+    logger.warning("No screenshot could be taken for %s", tag)
+    return None
 
 
 def pause(delay_ms: list[int], factor: float = 1.0) -> None:
@@ -708,7 +722,8 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
             return CheckResult(status="no_slots", detail=detail)
         shot = dump(page, tag)
         logger.warning("Unexpected screen: %s", detail)
-        return CheckResult(status=status, detail=detail, screenshot_path=shot)
+        return CheckResult(status=status, detail=detail, screenshot_path=shot,
+                           has_page=True)
 
     # 0. Entry
     resp = page.goto(cfg["start_url"], wait_until="domcontentloaded", timeout=45000)

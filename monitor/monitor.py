@@ -272,7 +272,10 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
     keep_open = False
     try:
         result = flow.walk_to_dates(page, cfg, verify=verify, office=office)
-        keep_open = result.status == "slots" or verify
+        # an unreadable page is kept on screen for the same reason slots are:
+        # the alert asks the reader to look at it
+        keep_open = (result.status == "slots" or verify
+                     or (result.status == "error" and result.has_page))
         if keep_open:
             try:
                 page.bring_to_front()
@@ -361,7 +364,7 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         # they ate the quiet period and the page worth seeing was suppressed as
         # a repeat. A captured page is rare and always worth sending; only the
         # pageless failures are throttled.
-        has_page = bool(result.screenshot_path)
+        has_page = result.has_page
         key = "unknown_page_notified_at" if has_page else "unknown_notified_at"
         hours = 0.5 if has_page else notify_cfg.get("unknown_cooldown_hours", 6)
         last = state.get(key)
@@ -373,7 +376,7 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             # failure leaves nothing to look at, and saying otherwise sends the
             # reader to a window that was never there.
             where = ("Вкладка оставлена открытой, плюс дамп в debug/."
-                     if result.screenshot_path else
+                     if result.has_page else
                      "Страницы нет — соединение не состоялось.")
             notify.send_telegram(
                 "<b>Незнакомый экран на сайте</b>\n"
@@ -557,7 +560,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 announced |= handle_result(result, cfg, state, now, office=office)
                 if result.status in ("slots", "no_slots", "not_offered"):
                     checked += 1
-                if result.status == "error" and result.screenshot_path:
+                if result.status == "error" and result.has_page:
                     inspectable = True
                 save_state(state)
                 last_status = result.status
