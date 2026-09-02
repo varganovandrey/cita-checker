@@ -59,9 +59,12 @@ def setup_logging(verbose: bool = False) -> None:
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
-    root.addHandler(console)
+    # Under pythonw there is no console and sys.stdout is None; the file handler
+    # above is the real log either way.
+    if sys.stdout is not None:
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(fmt)
+        root.addHandler(console)
 
 
 def load_config(path: Path) -> dict:
