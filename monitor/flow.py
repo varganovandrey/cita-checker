@@ -27,6 +27,10 @@ logger = logging.getLogger("monitor.flow")
 
 DEBUG_DIR = Path(__file__).with_name("debug")
 
+# the daemon runs under pythonw with no console, so each helper process would
+# otherwise pop its own window
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 NO_SLOTS_MARKERS = [
     "no hay citas disponibles",
     "no existen citas disponibles",
@@ -123,14 +127,15 @@ def _kill_profile_browsers(user_data_dir: str) -> int:
     )
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, timeout=30,
+                             creationflags=NO_WINDOW)
         pids = [line.strip() for line in out.stdout.splitlines() if line.strip().isdigit()]
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not enumerate browser processes: %s", exc)
         return 0
     for pid in pids:
         subprocess.run(["taskkill", "/PID", pid, "/T", "/F"],
-                       capture_output=True, check=False)
+                       capture_output=True, check=False, creationflags=NO_WINDOW)
     if pids:
         logger.info("Killed %d stale browser process(es) on our profile", len(pids))
     return len(pids)

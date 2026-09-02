@@ -20,10 +20,16 @@ logger = logging.getLogger("monitor.vpn")
 PS = ["powershell.exe", "-NoProfile", "-Command"]
 TIMEOUT = 30
 
+# Under pythonw the daemon has no console of its own, so every helper process
+# Windows starts gets a brand new window - roughly 64 flashes a day from the
+# VPN probe alone. CREATE_NO_WINDOW keeps them out of sight.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def _run_ps(script: str) -> tuple[int, str]:
     try:
-        out = subprocess.run(PS + [script], capture_output=True, text=True, timeout=TIMEOUT)
+        out = subprocess.run(PS + [script], capture_output=True, text=True,
+                             timeout=TIMEOUT, creationflags=NO_WINDOW)
         return out.returncode, (out.stdout or "").strip()
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("PowerShell call failed: %s", exc)
@@ -37,27 +43,40 @@ def is_active(vpn_cfg: dict) -> tuple[bool, str]:
         (active, human-readable reason).
     """
     adapter = vpn_cfg.get("adapter_name", "")
+    service = vpn_cfg.get("service_name", "")
+    if not adapter and not service:
+        return False, "no adapter or service configured"
+
+    # One PowerShell launch, not two: starting the shell costs ~3.5 s and this
+    # runs before every check, so a second probe would double the overhead for
+    # no extra information.
+    parts = []
     if adapter:
-        code, out = _run_ps(
+        parts.append(
             f"$a = Get-NetAdapter -Name '{adapter}' -ErrorAction SilentlyContinue; "
             "if ($a -and $a.Status -eq 'Up') { "
             f"  $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -InterfaceAlias '{adapter}' "
             "       -ErrorAction SilentlyContinue; "
-            "  if ($r) { 'DEFAULT_ROUTE' } else { 'UP' } "
-            "} else { 'DOWN' }"
+            "  if ($r) { 'ADAPTER=DEFAULT_ROUTE' } else { 'ADAPTER=UP' } "
+            "} else { 'ADAPTER=DOWN' }"
         )
-        if code == 0 and out == "DEFAULT_ROUTE":
-            return True, f"adapter '{adapter}' is up and holds the default route"
-        if code == 0 and out == "UP":
-            return True, f"adapter '{adapter}' is up"
-
-    service = vpn_cfg.get("service_name", "")
     if service:
-        code, out = _run_ps(
-            f"(Get-Service -Name '{service}' -ErrorAction SilentlyContinue).Status"
+        parts.append(
+            f"'SERVICE=' + (Get-Service -Name '{service}' -ErrorAction SilentlyContinue).Status"
         )
-        if code == 0 and out == "Running":
-            return True, f"service '{service}' is running"
+    code, out = _run_ps("; ".join(parts))
+    if code != 0:
+        return False, "could not query the tunnel state"
+
+    facts = dict(
+        line.split("=", 1) for line in out.splitlines() if "=" in line
+    )
+    if facts.get("ADAPTER") == "DEFAULT_ROUTE":
+        return True, f"adapter '{adapter}' is up and holds the default route"
+    if facts.get("ADAPTER") == "UP":
+        return True, f"adapter '{adapter}' is up"
+    if facts.get("SERVICE") == "Running":
+        return True, f"service '{service}' is running"
 
     return False, "no active tunnel found"
 
@@ -89,7 +108,8 @@ def disable(vpn_cfg: dict) -> tuple[bool, str]:
 
     try:
         subprocess.run(["schtasks", "/Run", "/TN", task],
-                       capture_output=True, text=True, timeout=TIMEOUT, check=False)
+                       capture_output=True, text=True, timeout=TIMEOUT, check=False,
+                       creationflags=NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not trigger '{task}': {exc}"
 
