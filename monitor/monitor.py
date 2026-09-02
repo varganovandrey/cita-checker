@@ -341,9 +341,13 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         logger.warning("Blocked by site (%s). Backing off until %s",
                        result.detail[:160], until.strftime("%H:%M"))
         if not state.get("blocked_notified") and cfg["notify"].get("telegram", True):
+            # the block page itself is worth seeing: the WAF has several faces,
+            # and which one answered says how deep the refusal is
+            photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
             notify.send_telegram(
                 "Сайт отбивает запросы (блокировка). "
-                f"Пауза до {until.strftime('%H:%M')} по времени Мадрида."
+                f"Пауза до {until.strftime('%H:%M')} по времени Мадрида.",
+                photo,
             )
             state["blocked_notified"] = True
 
@@ -352,8 +356,16 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         # format, a changed layout - so it must not fail silently. Rate-limited
         # so a persistent site change cannot turn into a notification flood.
         logger.warning("Unknown screen, see debug/: %s", result.detail[:200])
-        last = state.get("unknown_notified_at")
-        quiet = dt.timedelta(hours=notify_cfg.get("unknown_cooldown_hours", 6))
+        # Two different failures shared one rate limit, and the noisy one won:
+        # connection failures outnumbered real unreadable pages five to one, so
+        # they ate the quiet period and the page worth seeing was suppressed as
+        # a repeat. A captured page is rare and always worth sending; only the
+        # pageless failures are throttled.
+        has_page = bool(result.screenshot_path)
+        key = "unknown_page_notified_at" if has_page else "unknown_notified_at"
+        hours = 0.5 if has_page else notify_cfg.get("unknown_cooldown_hours", 6)
+        last = state.get(key)
+        quiet = dt.timedelta(hours=hours)
         due = last is None or (now - dt.datetime.fromisoformat(last)) > quiet
         if due and notify_cfg.get("telegram", True):
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
@@ -371,7 +383,7 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
                 f"<code>{html.escape(result.detail[:200])}</code>",
                 photo,
             )
-            state["unknown_notified_at"] = now.isoformat()
+            state[key] = now.isoformat()
 
     return False
 
