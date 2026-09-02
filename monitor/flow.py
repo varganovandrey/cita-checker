@@ -199,6 +199,26 @@ def launch_browser(browser_cfg: dict) -> None:
     )
 
 
+def _clear_profile_locks(user_data_dir: str) -> None:
+    """Remove the Singleton* lock files a killed browser leaves behind."""
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            (Path(user_data_dir) / name).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("Could not remove %s: %s", name, exc)
+
+
+def _launch_and_wait(browser_cfg: dict, cdp_url: str, seconds: int) -> bool:
+    """Start the browser and wait for its debug port. True if it came up."""
+    launch_browser(browser_cfg)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _cdp_alive(cdp_url):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def get_browser(pw: Playwright, browser_cfg: dict) -> Browser:
     """Attach to a running Brave/Chrome via CDP, auto-launching it if allowed.
 
@@ -209,14 +229,15 @@ def get_browser(pw: Playwright, browser_cfg: dict) -> Browser:
     if not _cdp_alive(cdp_url):
         if not browser_cfg.get("auto_launch", True):
             raise ChromeUnavailable(f"CDP endpoint {cdp_url} is down and auto_launch is off")
-        launch_browser(browser_cfg)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if _cdp_alive(cdp_url):
-                break
-            time.sleep(0.5)
-        else:
-            raise ChromeUnavailable(f"CDP endpoint {cdp_url} did not come up after launch")
+        # A cold start after the profile tree was killed can take well over 15 s,
+        # and the leftover Singleton* locks make the first attempt fail outright.
+        # One retry with the locks cleared turns a lost check into a slow one.
+        if not _launch_and_wait(browser_cfg, cdp_url, 30):
+            logger.warning("Browser did not come up; clearing profile locks and retrying")
+            _kill_profile_browsers(browser_cfg["user_data_dir"])
+            _clear_profile_locks(browser_cfg["user_data_dir"])
+            if not _launch_and_wait(browser_cfg, cdp_url, 45):
+                raise ChromeUnavailable(f"CDP endpoint {cdp_url} did not come up after launch")
     try:
         browser = pw.chromium.connect_over_cdp(cdp_url, timeout=5000)
     except PWError as first_error:
