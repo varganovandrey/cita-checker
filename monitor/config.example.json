@@ -104,7 +104,7 @@
   "quick_check_hours": [],
   "vpn": {
     "check_before_run": true,
-    "disable_before_run": true,
+    "disable_before_run": false,
     "skip_run_if_active": true,
     "adapter_name": "",
     "service_name": "",
