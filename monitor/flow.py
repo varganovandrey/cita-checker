@@ -129,7 +129,7 @@ def _kill_profile_browsers(user_data_dir: str) -> int:
     )
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True, timeout=30,
+                             capture_output=True, text=True, timeout=60,
                              creationflags=NO_WINDOW)
         pids = [line.strip() for line in out.stdout.splitlines() if line.strip().isdigit()]
     except (OSError, subprocess.SubprocessError) as exc:

@@ -580,8 +580,13 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             # that tab is deliberately parked on the dates screen for booking.
             # keep the window when there is something to look at: slots to book,
             # or a page the monitor could not classify
-            if (cfg.get("close_browser_after_sweep", True)
-                    and not announced and not inspectable and not verify):
+            # Tearing the browser down after every 40-second quick check meant
+            # ~30 cold starts a day, and each one is a chance to lose a check -
+            # three were lost today that way. A full sweep is worth the cleanup;
+            # a quick check is not.
+            close_now = cfg.get("close_browser_after_sweep", True) and (
+                not is_quick or cfg.get("close_browser_after_quick_check", False))
+            if close_now and not announced and not inspectable and not verify:
                 flow.close_browser(browser_holder.pop("browser", None), cfg["browser"])
 
             if (notify_cfg.get("sweep_summary", True) and not verify
