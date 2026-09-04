@@ -268,7 +268,20 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
         browser = flow.get_browser(pw, cfg["browser"])
         browser_holder["browser"] = browser
 
-    page = flow.new_tab(browser)
+    # Now that the browser is kept alive between quick checks, the cached handle
+    # outlives the process it points at whenever that dies in the meantime.
+    # is_connected() still reports True at that point, and the failure only
+    # surfaces here - so a dead handle is dropped and reacquired rather than
+    # costing the check.
+    try:
+        page = flow.new_tab(browser)
+    except (PWError, flow.ChromeUnavailable) as exc:
+        logger.info("Cached browser handle was stale (%s); reconnecting",
+                    str(exc).splitlines()[0][:70])
+        browser_holder.pop("browser", None)
+        browser = flow.get_browser(pw, cfg["browser"])
+        browser_holder["browser"] = browser
+        page = flow.new_tab(browser)
     keep_open = False
     try:
         result = flow.walk_to_dates(page, cfg, verify=verify, office=office)
