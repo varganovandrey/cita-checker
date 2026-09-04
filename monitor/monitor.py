@@ -192,6 +192,45 @@ def _within_quick_hours(cfg: dict, moment: dt.datetime) -> bool:
     return start <= moment.time() < end
 
 
+def _collides_with_sweep(cfg: dict, moment: dt.datetime) -> bool:
+    """Whether a quick check at this moment would run into a full sweep.
+
+    A sweep occupies the better part of an hour, so it is not enough to keep a
+    few minutes clear: every slot from just before the start until the sweep is
+    done has to be skipped.
+    """
+    duration = dt.timedelta(minutes=int(cfg.get("sweep_duration_minutes", 50)))
+    lead = dt.timedelta(minutes=int(cfg.get("quick_check_guard_minutes", 5)))
+    days = {WEEKDAYS[d] for d in cfg["schedule"].get("run_days", list(WEEKDAYS))}
+    if moment.weekday() not in days:
+        return False
+    for value in cfg["schedule"].get("run_at", []):
+        start = dt.datetime.combine(moment.date(), _parse_hhmm(value), tzinfo=moment.tzinfo)
+        if start - lead <= moment < start + duration:
+            return True
+    return False
+
+
+def next_quick_at(cfg: dict, after: dt.datetime) -> Optional[dt.datetime]:
+    """Next quick check, on a fixed wall-clock grid.
+
+    Counting the interval from the previous check makes the times drift with
+    every restart and every sweep; anchoring them to the clock keeps :00 and
+    :30 meaning :00 and :30. Slots outside the allowed hours, or taken by a
+    sweep, are stepped over rather than shifting everything after them.
+    """
+    every = int(cfg.get("quick_check_minutes", 0) or 0)
+    if not every:
+        return None
+    slot = after.replace(second=0, microsecond=0)
+    slot = slot.replace(minute=(slot.minute // every) * every) + dt.timedelta(minutes=every)
+    for _ in range(2 * 24 * 60 // every):
+        if _within_quick_hours(cfg, slot) and not _collides_with_sweep(cfg, slot):
+            return slot
+        slot += dt.timedelta(minutes=every)
+    return None
+
+
 def next_sleep_seconds(cfg: dict, now: dt.datetime) -> int:
     sched = cfg["schedule"]
     if in_active_window(cfg, now):
@@ -445,23 +484,12 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 # A full sweep runs for ~48 min, so a quick check that started
                 # just before one would still be running when it begins - hence
                 # the guard band rather than a bare comparison of due times.
-                quick_every = int(cfg.get("quick_check_minutes", 0) or 0)
-                if quick_every and next_quick is None:
-                    next_quick = now + dt.timedelta(minutes=quick_every)
-                if next_quick is not None and not _within_quick_hours(cfg, next_quick):
-                    # slots are released during office hours; checks at 03:00 are
-                    # load without upside
-                    next_quick += dt.timedelta(minutes=quick_every)
+                if next_quick is None:
+                    next_quick = next_quick_at(cfg, now)
 
                 target, is_quick = pending, False
                 if next_quick is not None and next_quick < pending:
-                    guard = dt.timedelta(minutes=int(cfg.get("quick_check_guard_minutes", 5)))
-                    if next_quick + guard >= pending:
-                        # too close to the sweep: let the sweep have it
-                        next_quick = None
-                        logger.info("Quick check skipped, full sweep is imminent")
-                    else:
-                        target, is_quick = next_quick, True
+                    target, is_quick = next_quick, True
 
                 wait = int((target - now).total_seconds())
                 if wait > 0:
@@ -476,7 +504,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
                 if is_quick:
                     logger.info("Quick check starting (%s)", target.strftime("%a %H:%M"))
-                    next_quick = now + dt.timedelta(minutes=quick_every)
+                    next_quick = next_quick_at(cfg, now)
                 else:
                     logger.info("Scheduled sweep starting (%s)", pending.strftime("%a %H:%M"))
                     pending = None

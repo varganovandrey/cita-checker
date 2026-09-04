@@ -110,5 +110,6 @@
     "service_name": "",
     "stop_task_name": ""
   },
-  "close_browser_after_quick_check": false
+  "close_browser_after_quick_check": false,
+  "sweep_duration_minutes": 50
 }
