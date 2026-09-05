@@ -859,7 +859,8 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
     # 5b. "Paso 2 de 5" - contact details. This screen only appears when the
     # request got past availability, so reaching it is a good sign. The second
     # email field carries class="noPaste", hence typing rather than filling.
-    if page.locator("#txtTelefonoCitado").count():
+    def fill_contact_form() -> Optional[CheckResult]:
+        """Fill "paso 2 de 5". Returns a result only if the walk should stop."""
         logger.info("Contact form reached (paso 2)")
         phone = str(applicant.get("phone", "") or "")
         email = str(applicant.get("email", "") or "")
@@ -894,6 +895,12 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
             return CheckResult(status="blocked", detail=txt[:400],
                                screenshot_path=dump(page, "05c_blocked"))
         human_wander(page)
+        return None
+
+    if page.locator("#txtTelefonoCitado").count():
+        stop = fill_contact_form()
+        if stop is not None:
+            return stop
 
     # 6. Office ("Cualquier oficina" if present)
     try:
@@ -933,5 +940,23 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
     if best:
         shot = dump(page, "07_slots_found")
         return CheckResult(status="slots", dates=best, screenshot_path=shot)
+
+    # The contact form is checked for once, right after "Solicitar Cita", and it
+    # does not always arrive within that wait - the walk then carries on and
+    # ends up here, still sitting on it. Every one of the three times this site
+    # let us past availability, the check died exactly this way, one step short
+    # of the dates. So treat the form as a recovery point, not a single shot.
+    if page.locator("#txtTelefonoCitado").count():
+        logger.info("Still on the contact form at the dates step - filling it now")
+        stop = fill_contact_form()
+        if stop is not None:
+            return stop
+        txt = page_text(page)
+        if any(m in txt for m in NO_SLOTS_MARKERS):
+            return CheckResult(status="no_slots")
+        late = extract_slots(txt)
+        if late:
+            shot = dump(page, "07_slots_found")
+            return CheckResult(status="slots", dates=sorted(set(late)), screenshot_path=shot)
 
     return unexpected("07_fechas")

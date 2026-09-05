@@ -329,6 +329,7 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
         keep_open = (result.status == "slots" or verify
                      or (result.status == "error" and result.has_page))
         if keep_open:
+            browser_holder["kept_tab"] = True
             try:
                 page.bring_to_front()
             except PWError:
@@ -628,8 +629,13 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             # ~30 cold starts a day, and each one is a chance to lose a check -
             # three were lost today that way. A full sweep is worth the cleanup;
             # a quick check is not.
+            # A later check must not close the window on a tab parked for
+            # the reader: at 07:00 a page was kept, and the 07:30 check
+            # closed the browser before anyone could look at it.
             close_now = cfg.get("close_browser_after_sweep", True) and (
                 not is_quick or cfg.get("close_browser_after_quick_check", False))
+            if browser_holder.get("kept_tab"):
+                close_now = False
             if close_now and not announced and not inspectable and not verify:
                 flow.close_browser(browser_holder.pop("browser", None), cfg["browser"])
 
