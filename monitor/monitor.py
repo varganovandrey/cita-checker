@@ -504,7 +504,10 @@ def run_loop(cfg: dict, once: bool, verify: bool,
 
                 if is_quick:
                     logger.info("Quick check starting (%s)", target.strftime("%a %H:%M"))
-                    next_quick = next_quick_at(cfg, now)
+                    # from the slot, not from the clock: the loop can enter a
+                    # fraction of a second early, and rounding that down lands
+                    # back on the slot just run - which is how 20:30 fired twice
+                    next_quick = next_quick_at(cfg, target)
                 else:
                     logger.info("Scheduled sweep starting (%s)", pending.strftime("%a %H:%M"))
                     pending = None
