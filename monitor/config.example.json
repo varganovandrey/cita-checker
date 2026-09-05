@@ -1,0 +1,115 @@
+{
+  "start_url": "https://icp.administracionelectronica.gob.es/icpplus/index.html",
+  "province": "Madrid",
+  "tramite_contains": "TOMA DE HUELLAS",
+  "office": "Cualquier oficina",
+  "extra_offices": [],
+  "offices_per_cycle": 0,
+  "office_switch_seconds": [
+    20,
+    50
+  ],
+  "applicant": {
+    "doc_type": "nie",
+    "doc_number": "Y0000000X",
+    "full_name": "NOMBRE APELLIDO",
+    "country": "RUSIA",
+    "birth_year": "",
+    "phone": "",
+    "email": ""
+  },
+  "filter": {
+    "min_date": null,
+    "max_date": null
+  },
+  "schedule": {
+    "timezone": "Europe/Madrid",
+    "run_at": [],
+    "run_days": [
+      "mon",
+      "tue",
+      "wed",
+      "thu",
+      "fri",
+      "sat",
+      "sun"
+    ],
+    "windows": [
+      {
+        "days": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri"
+        ],
+        "start": "08:00",
+        "end": "09:30"
+      },
+      {
+        "days": [
+          "mon"
+        ],
+        "start": "09:30",
+        "end": "11:00"
+      }
+    ],
+    "active_interval_minutes": [
+      5,
+      10
+    ],
+    "idle_interval_minutes": [
+      60,
+      120
+    ]
+  },
+  "browser": {
+    "cdp_url": "http://127.0.0.1:9222",
+    "auto_launch": true,
+    "browser_path": null,
+    "user_data_dir": "C:\\AI_project\\cita-checker\\monitor\\chrome-profile"
+  },
+  "check": {
+    "buscar_retries": 4,
+    "action_delay_ms": [
+      400,
+      1400
+    ],
+    "typing_delay_ms": [
+      60,
+      140
+    ]
+  },
+  "notify": {
+    "telegram": true,
+    "local": true,
+    "screenshot": true,
+    "repeat_cooldown_minutes": 60,
+    "unknown_cooldown_hours": 6,
+    "sweep_start": true,
+    "sweep_summary": true,
+    "sweep_progress": true
+  },
+  "blocked_backoff_minutes": [
+    90,
+    180
+  ],
+  "sweep_chunk_size": 5,
+  "sweep_chunk_pause_minutes": 15,
+  "recheck_primary_last": true,
+  "sweep_error_budget": 3,
+  "close_browser_after_sweep": true,
+  "quick_check_minutes": 0,
+  "quick_check_guard_minutes": 5,
+  "quick_check_hours": [],
+  "vpn": {
+    "check_before_run": true,
+    "disable_before_run": false,
+    "skip_run_if_active": true,
+    "adapter_name": "",
+    "service_name": "",
+    "stop_task_name": ""
+  },
+  "close_browser_after_quick_check": false,
+  "sweep_duration_minutes": 50
+}
