@@ -111,5 +111,6 @@
     "stop_task_name": ""
   },
   "close_browser_after_quick_check": false,
-  "sweep_duration_minutes": 50
+  "sweep_duration_minutes": 50,
+  "quick_check_offices": []
 }

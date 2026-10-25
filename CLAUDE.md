@@ -17,6 +17,8 @@ Cita Checker Enhanced is a comprehensive Python automation system that monitors 
 - The WAF has two rejection faces: a `Request Rejected` page and a JavaScript-challenge page. Both carry a support ID; both are in `BLOCK_MARKERS`. A page with no `form/select/input` is also treated as blocked.
 - **Office is selected BEFORE the tramite, on the same page.** `#sede` fires `onchange="cargaTramites()"` which repopulates `#tramiteGrupo[0]` via `POST /selectSede`. `#idSede` does not exist here.
 - **Option matching must prefer exact over substring**: the country list contains both `RUSIA` and `BIELORRUSIA O BELARUS`, and substring matching silently picks Belarus.
+- **Since 2026-10-25 "Cualquier oficina" no longer offers TOMA DE HUELLAS** — its tramite list shrank to "INFORMACIÓN PRESENCIAL" only. Set `office` to `""` to drop the broad pass, and give quick checks real offices via `quick_check_offices` (they rotate, one per check).
+- Several applicants: one `config-<person>.json` each (gitignored), one scheduled task each passing `--config`; the loopback mutex keeps two daemons from running at once.
 - **Only 22 of 45 Madrid offices offer TOMA DE HUELLAS.** No district commissariat in Madrid city does; inside the city only `CNP AVDA POBLADOS` and `CNP SAN FELIPE TIE`. Survey cached in `monitor/debug/offices_survey.json`, regenerate with `--discover-offices`.
 - The flow includes a contact step (`paso 2 de 5`: phone + two email fields, the second with `noPaste`) that the legacy scripts never reached.
 - **Never books.** On a find: local beep, Telegram with screenshot, tab left open on the dates screen.

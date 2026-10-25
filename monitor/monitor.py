@@ -283,20 +283,37 @@ def offices_for_cycle(cfg: dict, state: dict) -> list[str]:
     specific offices are swept alongside it rather than trusted away. Each office
     costs a full ~45s pass, hence the small rotating slice instead of all 40.
     """
-    primary = cfg["office"]
+    # An empty office means "no broad pass": since 25 Oct 2026 the site no longer
+    # offers TOMA DE HUELLAS under "Cualquier oficina" at all, so sweeping it
+    # only burns two passes on "not offered".
+    primary = cfg.get("office") or ""
     extra = [o for o in cfg.get("extra_offices", []) if o]
     per_cycle = int(cfg.get("offices_per_cycle", 0))
     if not extra or per_cycle <= 0:
-        return [primary]
+        return [primary] if primary else []
     start = int(state.get("office_rotation", 0)) % len(extra)
     picked = [extra[(start + i) % len(extra)] for i in range(min(per_cycle, len(extra)))]
     state["office_rotation"] = (start + len(picked)) % len(extra)
-    sweep = [primary, *picked]
+    sweep = ([primary] if primary else []) + picked
     # a sweep runs for the better part of an hour, so the opening broad check is
     # stale by the end; repeat it last to catch anything released meanwhile
-    if cfg.get("recheck_primary_last", True):
+    if primary and cfg.get("recheck_primary_last", True):
         sweep.append(primary)
     return sweep
+
+
+def quick_check_office(cfg: dict, state: dict) -> str:
+    """Office for the next quick check, rotating through quick_check_offices.
+
+    Quick checks used to go through "Cualquier oficina" only; once the site
+    stopped offering the tramite there, every one of them came back "not
+    offered". Rotating through a few nearby offices keeps the half-hourly
+    cadence useful at the same cost of one pass per check.
+    """
+    offices = [o for o in cfg.get("quick_check_offices", []) if o] or [cfg.get("office") or ""]
+    index = int(state.get("quick_rotation", 0)) % len(offices)
+    state["quick_rotation"] = (index + 1) % len(offices)
+    return offices[index]
 
 
 def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
@@ -573,7 +590,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 state["vpn_notified"] = False
 
             if is_quick:
-                sweep = [cfg["office"]]
+                sweep = [quick_check_office(cfg, state)]
             else:
                 sweep = (offices_override or
                          ([cfg["office"]] if verify else offices_for_cycle(cfg, state)))
