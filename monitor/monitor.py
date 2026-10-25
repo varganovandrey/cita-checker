@@ -509,6 +509,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
         while True:
             now = dt.datetime.now(tz)
             is_quick = False
+            resuming = False
 
             blocked_until = state.get("blocked_until")
             if blocked_until and not once and not verify:
@@ -532,14 +533,31 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 # A full sweep runs for ~48 min, so a quick check that started
                 # just before one would still be running when it begins - hence
                 # the guard band rather than a bare comparison of due times.
-                if next_quick is None:
+                # A block used to discard the rest of a sweep: on 25 Oct the 14:00
+                # sweep checked one office of 22 and the other 21 waited until the
+                # next morning. Once the backoff is over (checked above), finish
+                # what was interrupted - unless the next full sweep is close
+                # enough to cover it anyway, or it is outside working hours.
+                if state.get("resume_sweep"):
+                    room = pending - now
+                    long_enough = dt.timedelta(minutes=int(cfg.get("sweep_duration_minutes", 50)))
+                    if _within_quick_hours(cfg, now) and room > long_enough:
+                        resuming = True
+                        next_quick = None  # re-armed once the resumed sweep is done
+                        logger.info("Resuming the interrupted sweep: %d offices left",
+                                    len(state["resume_sweep"]))
+                    else:
+                        logger.info("Dropping the interrupted sweep; the next full sweep covers it")
+                        state["resume_sweep"] = None
+
+                if next_quick is None and not resuming:
                     next_quick = next_quick_at(cfg, now)
 
                 target, is_quick = pending, False
                 if next_quick is not None and next_quick < pending:
                     target, is_quick = next_quick, True
 
-                wait = int((target - now).total_seconds())
+                wait = 0 if resuming else int((target - now).total_seconds())
                 if wait > 0:
                     nap = min(wait, 1800)  # wake periodically so Ctrl+C stays responsive
                     logger.info("Next %s at %s %s (in %d min), sleeping %d min",
@@ -550,7 +568,9 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     time.sleep(nap)
                     continue
 
-                if is_quick:
+                if resuming:
+                    is_quick = False  # the pending full sweep stays scheduled
+                elif is_quick:
                     logger.info("Quick check starting (%s)", target.strftime("%a %H:%M"))
                     # from the slot, not from the clock: the loop can enter a
                     # fraction of a second early, and rounding that down lands
@@ -589,7 +609,10 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             if state.get("vpn_notified"):
                 state["vpn_notified"] = False
 
-            if is_quick:
+            if resuming:
+                sweep = list(state["resume_sweep"])
+                state["resume_sweep"] = None
+            elif is_quick:
                 sweep = [quick_check_office(cfg, state)]
             else:
                 sweep = (offices_override or
@@ -607,7 +630,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             if notify_cfg.get("sweep_start", True) and not verify and not is_quick:
                 estimate = round(len(sweep) * 75 / 60)
                 notify.send_telegram(
-                    f"Обход начался ({cfg['applicant'].get('full_name', '')}): "
+                    f"{'Продолжение прерванного обхода' if resuming else 'Обход начался'} "
+                    f"({cfg['applicant'].get('full_name', '')}): "
                     f"{len(sweep)} офисов, ориентировочно {estimate} мин."
                 )
 
@@ -658,6 +682,11 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 save_state(state)
                 last_status = result.status
                 if result.status == "blocked":
+                    # remember where the sweep stopped so it can be finished after
+                    # the backoff instead of being lost until the next morning
+                    if not is_quick and not once and not verify:
+                        state["resume_sweep"] = sweep[index:]
+                        save_state(state)
                     break  # the site is refusing; walking on only deepens it
                 if result.status == "error":
                     # one odd screen is not a reason to abandon the whole day:
