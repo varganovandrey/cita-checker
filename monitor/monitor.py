@@ -378,7 +378,8 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         if notify_cfg.get("telegram", True):
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
             notify.send_telegram(
-                f"<b>Свободна сита!</b>\n{html.escape(office)}\n{html.escape(shown)}", photo)
+                f"<b>Свободна сита!</b>\n{html.escape(cfg['applicant'].get('full_name', ''))}\n"
+                f"{html.escape(office)}\n{html.escape(shown)}", photo)
         seen[office] = {"hash": digest, "at": now.isoformat()}
         return True
 
@@ -408,6 +409,35 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             state["blocked_notified"] = True
 
     else:
+        # The contact form only appears once the site has passed availability,
+        # so reaching it without contact data most likely means slots exist.
+        # It must not be reported as an ordinary odd screen.
+        if "contact form requires" in result.detail:
+            logger.warning("Past availability but no contact data configured [%s]", office)
+            last = state.get("contact_missing_notified_at")
+            due = last is None or (now - dt.datetime.fromisoformat(last)) > dt.timedelta(minutes=30)
+            if due:
+                who = cfg["applicant"].get("full_name", "")
+                message = (
+                    "Похоже, есть слоты!\n"
+                    f"{who}\n{office}\n"
+                    "Сайт пропустил дальше проверки доступности и просит контакты, "
+                    "а их нет в конфиге. Вкладка открыта — дожмите бронь вручную."
+                )
+                if notify_cfg.get("local", True):
+                    notify.local_alert("Cita Madrid", message)
+                if notify_cfg.get("telegram", True):
+                    photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
+                    notify.send_telegram(
+                        "<b>Похоже, есть слоты!</b>\n"
+                        f"{html.escape(who)}\n{html.escape(office)}\n"
+                        "Сайт пропустил дальше проверки доступности и просит контакты, "
+                        "а их нет в конфиге. Вкладка открыта — дожмите бронь вручную.",
+                        photo,
+                    )
+                state["contact_missing_notified_at"] = now.isoformat()
+            return False
+
         # An unrecognised screen may BE the opportunity - dates in an unexpected
         # format, a changed layout - so it must not fail silently. Rate-limited
         # so a persistent site change cannot turn into a notification flood.
@@ -560,7 +590,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             if notify_cfg.get("sweep_start", True) and not verify and not is_quick:
                 estimate = round(len(sweep) * 75 / 60)
                 notify.send_telegram(
-                    f"Обход начался: {len(sweep)} офисов, ориентировочно {estimate} мин."
+                    f"Обход начался ({cfg['applicant'].get('full_name', '')}): "
+                    f"{len(sweep)} офисов, ориентировочно {estimate} мин."
                 )
 
             chunk = int(cfg.get("sweep_chunk_size", 0) or 0)
@@ -644,7 +675,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 minutes = round((dt.datetime.now(tz) - sweep_started).total_seconds() / 60)
                 cut = "" if checked == len(sweep) else f" (обход прерван: {last_status})"
                 notify.send_telegram(
-                    f"Обход завершён, слотов нет. Проверено {checked} из {len(sweep)} "
+                    f"Обход завершён ({cfg['applicant'].get('full_name', '')}), слотов нет. "
+                    f"Проверено {checked} из {len(sweep)} "
                     f"за {minutes} мин{cut}."
                 )
 

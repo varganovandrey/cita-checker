@@ -866,10 +866,13 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
         email = str(applicant.get("email", "") or "")
         if not phone or not email:
             shot = dump(page, "05b_contact_missing_data")
+            # has_page: this screen only appears once availability is passed,
+            # so the tab must stay open for the reader to finish by hand
             return CheckResult(
                 status="error",
                 detail="contact form requires applicant.phone and applicant.email in config",
                 screenshot_path=shot,
+                has_page=True,
             )
         step_pause()
         type_into(page, ["#txtTelefonoCitado", "input[name='txtTelefonoCitado']"],

@@ -8,5 +8,7 @@ cd /d "%~dp0"
 REM pythonw, not python: a console-attached daemon dies with STATUS_CONTROL_C_EXIT
 REM the moment its window is closed, which is how the monitor was lost mid-day.
 REM Without a console there is no window to close and no Ctrl+C to receive.
-start "" /b "%LOCALAPPDATA%\Programs\Python\Python312\pythonw.exe" monitor.py
+REM %* forwards arguments, so one launcher serves several people: a task can pass
+REM e.g. "--config config-someone.json" without a per-person batch file.
+start "" /b "%LOCALAPPDATA%\Programs\Python\Python312\pythonw.exe" monitor.py %*
 exit /b 0
