@@ -80,6 +80,9 @@ class CheckResult:
     screenshot_path: Optional[Path] = None
     # a real page was on screen - as opposed to a connection that never landed
     has_page: bool = False
+    # offices the site listed as having availability, and the one walked into
+    offered_offices: list[str] = field(default_factory=list)
+    chosen_office: str = ""
 
 
 class ChromeUnavailable(RuntimeError):
@@ -702,8 +705,52 @@ def discover_offices(page: Page, cfg: dict,
     return results
 
 
+def choose_offered_office(page: Page, priority: list[str]) -> tuple[str, list[str]]:
+    """On the "Selecciona Oficina" step, pick the nearest office on offer.
+
+    After "Cualquier oficina" the site lists only the offices that currently
+    have availability and asks for one. On 26 Oct it offered Avda. Poblados and
+    Colmenar Viejo; the walk did not know the step, reported an unknown screen,
+    and both were gone by the time a person got there. The priority list is the
+    user's own nearest-first office order.
+
+    Returns:
+        (chosen label, every offered label); ("", []) if nothing is on offer.
+    """
+    select = page.locator("#idSede").first
+    options = select.locator("option")
+    offered: list[tuple[str, str]] = []
+    for i in range(options.count()):
+        label = (options.nth(i).inner_text() or "").strip()
+        value = options.nth(i).get_attribute("value") or ""
+        if value and not label.lower().startswith("seleccionar"):
+            offered.append((label, value))
+    if not offered:
+        return "", []
+    pick = None
+    for wanted in priority:
+        pick = next((o for o in offered if wanted.lower() in o[0].lower()), None)
+        if pick:
+            break
+    pick = pick or offered[0]
+    human_move_to(page, select)
+    page.wait_for_timeout(random.randint(200, 600))
+    select.select_option(value=pick[1])
+    return pick[0], [label for label, _ in offered]
+
+
 def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
                   office: Optional[str] = None) -> CheckResult:
+    """Walk the form and attach which offices the site offered, if any."""
+    meta: dict = {"offered": [], "chosen": ""}
+    result = _walk_to_dates(page, cfg, verify, office, meta)
+    result.offered_offices = meta["offered"]
+    result.chosen_office = meta["chosen"]
+    return result
+
+
+def _walk_to_dates(page: Page, cfg: dict, verify: bool, office: Optional[str],
+                   meta: dict) -> CheckResult:
     """Walk the form from the start URL to the date screen.
 
     Every step verifies that the next screen actually appeared; anything
@@ -874,13 +921,30 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
     # After "Solicitar Cita" the next screen takes a moment to arrive. Deciding
     # what it is too early makes the contact form invisible and the walk then
     # falls through to the dates loop on a page that has not loaded yet.
-    settle_deadline = time.monotonic() + 10
-    while time.monotonic() < settle_deadline:
-        if page.locator("#txtTelefonoCitado").count():
-            break
-        if any(m in page_text(page) for m in NO_SLOTS_MARKERS):
-            break
-        page.wait_for_timeout(300)
+    def settle_next(seconds: int = 10) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if page.locator("#txtTelefonoCitado").count() or page.locator("#idSede").count():
+                return
+            if any(m in page_text(page) for m in NO_SLOTS_MARKERS):
+                return
+            page.wait_for_timeout(300)
+
+    settle_next()
+
+    # 5a. "Selecciona Oficina": the site lists offices that have availability.
+    if page.locator("#idSede").count():
+        priority = cfg.get("office_priority") or cfg.get("extra_offices", [])
+        chosen, offered = choose_offered_office(page, priority)
+        meta["offered"], meta["chosen"] = offered, chosen
+        if chosen:
+            logger.info("Site offers %d office(s) with availability: %s",
+                        len(offered), " | ".join(o[:45] for o in offered))
+            logger.info("Choosing the nearest: %s", chosen[:60])
+            step_pause()
+            click_any(page, ["#btnSiguiente", "input[value='Siguiente']",
+                             "button:has-text('Siguiente')"])
+            settle_next()
 
     # 5b. "Paso 2 de 5" - contact details. This screen only appears when the
     # request got past availability, so reaching it is a good sign. The second

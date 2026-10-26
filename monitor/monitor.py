@@ -412,10 +412,14 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             return False
 
         shown = format_slots(good)
-        logger.info("SLOTS FOUND [%s]: %s", office, shown)
+        # after "Cualquier oficina" the walk picked a concrete office itself
+        place = result.chosen_office or office
+        others = [o for o in result.offered_offices if o != result.chosen_office]
+        also = ("\nЕщё были свободны: " + "; ".join(others)) if others else ""
+        logger.info("SLOTS FOUND [%s]: %s", place[:60], shown)
         message = (
             "Свободна сита!\n"
-            f"{office}\n{shown}\n\n"
+            f"{place}\n{shown}{also}\n\n"
             "Вкладка открыта на экране дат — дожимайте бронь вручную."
         )
         if notify_cfg.get("local", True):
@@ -424,7 +428,7 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
             photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
             notify.send_telegram(
                 f"<b>Свободна сита!</b>\n{html.escape(cfg['applicant'].get('full_name', ''))}\n"
-                f"{html.escape(office)}\n{html.escape(shown)}", photo)
+                f"{html.escape(place)}\n{html.escape(shown)}{html.escape(also)}", photo)
         seen[office] = {"hash": digest, "at": now.isoformat()}
         return True
 
@@ -457,6 +461,27 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         # The contact form only appears once the site has passed availability,
         # so reaching it without contact data most likely means slots exist.
         # It must not be reported as an ordinary odd screen.
+        # The site listed offices with availability, but the walk did not get as
+        # far as dates. The list itself is the find - report it as one.
+        if result.offered_offices:
+            listed = "; ".join(result.offered_offices)
+            logger.warning("Offices with availability offered, walk stopped short: %s", listed[:200])
+            last = state.get("offered_notified_at")
+            if last is None or (now - dt.datetime.fromisoformat(last)) > dt.timedelta(minutes=30):
+                who = cfg["applicant"].get("full_name", "")
+                if notify_cfg.get("local", True):
+                    notify.local_alert("Cita Madrid", f"Есть слоты!\n{who}\n{listed}")
+                if notify_cfg.get("telegram", True):
+                    photo = result.screenshot_path if notify_cfg.get("screenshot", True) else None
+                    notify.send_telegram(
+                        f"<b>Есть слоты!</b>\n{html.escape(who)}\n"
+                        f"Сайт предлагает офисы: {html.escape(listed)}\n"
+                        "Монитор не дошёл до дат — вкладка открыта, дожмите вручную.",
+                        photo,
+                    )
+                state["offered_notified_at"] = now.isoformat()
+            return False
+
         if "contact form requires" in result.detail:
             logger.warning("Past availability but no contact data configured [%s]", office)
             last = state.get("contact_missing_notified_at")
