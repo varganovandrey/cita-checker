@@ -602,6 +602,35 @@ def describe_page(page: Page) -> None:
 # ─────────────────────────── the walk ───────────────────────────
 
 
+def select_tramite(page: Page, needle: str) -> str:
+    """Select the tramite in whichever tramiteGrupo list offers it.
+
+    The site splits tramites across several lists - "Tramites oficinas de
+    extranjeria" and "Tramites Policia Nacional" - and which one carries
+    TOMA DE HUELLAS depends on the office: under "Cualquier oficina" it sits in
+    the second list. Reading only tramiteGrupo[0] made the broad office look as
+    if it no longer offered the tramite at all.
+
+    Raises:
+        LookupError: no list offers it.
+    """
+    groups = page.locator("select[id^='tramiteGrupo']")
+    tried: list[str] = []
+    for i in range(groups.count()):
+        ident = groups.nth(i).get_attribute("id") or ""
+        if not ident:
+            continue
+        selector = "#" + ident.replace("[", "\\[").replace("]", "\\]")
+        try:
+            label = select_option_containing(page, [selector], needle)
+        except LookupError as exc:
+            tried.append(f"{ident}: {str(exc)[:80]}")
+            continue
+        if label:
+            return label
+    raise LookupError(f"No tramite list offers '{needle}'. Tried: {tried}")
+
+
 def discover_offices(page: Page, cfg: dict,
                      known: Optional[dict[str, bool]] = None) -> list[tuple[str, bool]]:
     """List every office and whether it offers the configured tramite.
@@ -656,7 +685,8 @@ def discover_offices(page: Page, cfg: dict,
         # the behavioural filter objects to
         page.wait_for_timeout(random.randint(2500, 6000))
         try:
-            tramites = page.locator("#tramiteGrupo\\[0\\]").first.locator("option")
+            # every tramite list, not just the first: see select_tramite()
+            tramites = page.locator("select[id^='tramiteGrupo'] option")
             texts = [(tramites.nth(i).inner_text() or "").lower() for i in range(tramites.count())]
         except PWError:
             texts = []
@@ -770,11 +800,7 @@ def walk_to_dates(page: Page, cfg: dict, verify: bool = False,
     # office without our tramite is a normal outcome, not a failure.
     step_pause()
     try:
-        label = select_option_containing(
-            page,
-            ["#tramiteGrupo\\[0\\]", "select[name='tramiteGrupo[0]']", "select"],
-            cfg["tramite_contains"],
-        )
+        label = select_tramite(page, cfg["tramite_contains"])
     except LookupError as exc:
         logger.info("Tramite not offered at %s", office)
         return CheckResult(status="not_offered", detail=str(exc)[:300])
