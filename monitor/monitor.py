@@ -316,6 +316,32 @@ def quick_check_office(cfg: dict, state: dict) -> str:
     return offices[index]
 
 
+def parked_tab_active(browser_holder: dict, cfg: dict) -> bool:
+    """Whether a tab left open for the reader is still being worked on.
+
+    The ICP site keeps one server-side session per cookie jar, and every check
+    runs in the same browser. A check started while the reader is booking in
+    the parked tab resets that session under them. On 26 Oct a likely find at
+    Coslada was lost because the only way to protect it was to kill the
+    monitor - which took the browser and the tab with it. Holding off instead
+    keeps both alive; the hold expires so a forgotten tab cannot stall the
+    monitor for good.
+    """
+    page = browser_holder.get("kept_page")
+    if page is None:
+        return False
+    limit = 60 * int(cfg.get("parked_tab_hold_minutes", 30))
+    try:
+        alive = not page.is_closed()
+    except PWError:
+        alive = False
+    if alive and time.monotonic() - browser_holder.get("kept_at", 0.0) < limit:
+        return True
+    for key in ("kept_page", "kept_at", "kept_tab"):
+        browser_holder.pop(key, None)
+    return False
+
+
 def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
               office: Optional[str] = None) -> CheckResult:
     """Run one full check for one office. Keeps the tab open only on slots."""
@@ -347,6 +373,8 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
                      or (result.status == "error" and result.has_page))
         if keep_open:
             browser_holder["kept_tab"] = True
+            browser_holder["kept_page"] = page
+            browser_holder["kept_at"] = time.monotonic()
             try:
                 page.bring_to_front()
             except PWError:
@@ -592,6 +620,13 @@ def run_loop(cfg: dict, once: bool, verify: bool,
             # offices ordered nearest-first
             # The site is judged from our IP; a VPN exit node replaces the
             # residential address the whole approach depends on.
+            if parked_tab_active(browser_holder, cfg):
+                logger.info("A tab is parked for the reader; skipping this check so its session survives")
+                save_state(state)
+                if once or verify:
+                    return 0
+                continue
+
             clear, vpn_note = vpn.ensure_off(cfg.get("vpn", {}))
             if not clear:
                 logger.warning("Run skipped: %s", vpn_note)
