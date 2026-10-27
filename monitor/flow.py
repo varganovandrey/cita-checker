@@ -543,6 +543,16 @@ def filter_slots(
 
 def classify_page(page: Page, http_status: Optional[int] = None) -> Status:
     """Classify an unexpected screen. Never returns 'slots'."""
+    # Chromium's own error page means the request never reached the site - the
+    # network dropped, or a VPN came up. It has no form controls either, so it
+    # used to fall through to the soft-block rule below and earn a 90-180 min
+    # backoff for what is a transient fault; at 06:58 that would cost the
+    # morning sweep, the one that finds openings.
+    try:
+        if page.url.startswith("chrome-error://"):
+            return "error"
+    except PWError:
+        pass
     if http_status is not None and http_status >= 400:
         return "blocked"
     txt = page_text(page)
