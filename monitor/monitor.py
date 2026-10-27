@@ -160,6 +160,30 @@ def seconds_to_next_window(cfg: dict, now: dt.datetime) -> Optional[int]:
     return int((min(candidates) - now).total_seconds())
 
 
+def missed_run_at(cfg: dict, now: dt.datetime, state: dict) -> Optional[dt.datetime]:
+    """A sweep slot that passed recently without running, to catch up on.
+
+    next_run_at() only looks forward, so a daemon started at 07:20 - the
+    laptop was asleep or off at 07:00 - skipped the morning sweep and waited
+    for 14:00. Every opening seen so far appeared in the morning, so that sweep
+    is the one that matters. A slot is caught up only if it is recent
+    (sweep_catchup_minutes) and has not already been run.
+    """
+    window = dt.timedelta(minutes=int(cfg.get("sweep_catchup_minutes", 90)))
+    days = {WEEKDAYS[d] for d in cfg["schedule"].get("run_days", list(WEEKDAYS))}
+    if now.weekday() not in days:
+        return None
+    for value in sorted(cfg["schedule"].get("run_at", []), reverse=True):
+        slot = dt.datetime.combine(now.date(), _parse_hhmm(value), tzinfo=now.tzinfo)
+        if slot <= now:
+            if now - slot <= window and state.get("last_sweep_slot") != slot.isoformat():
+                logger.info("Catching up the %s sweep missed while the monitor was down",
+                            slot.strftime("%H:%M"))
+                return slot
+            return None
+    return None
+
+
 def next_run_at(cfg: dict, now: dt.datetime) -> Optional[dt.datetime]:
     """Next scheduled sweep start, or None when no fixed times are configured.
 
@@ -579,7 +603,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 # strictly future times, so recomputing at the moment it comes due
                 # would skip straight past it to the following slot
                 if pending is None:
-                    pending = next_run_at(cfg, now)
+                    pending = missed_run_at(cfg, now, state) or next_run_at(cfg, now)
                 if pending is None:
                     raise SystemExit("schedule.run_at is set but yields no run time")
                 # Between full sweeps, poke the broad office on its own cadence.
@@ -631,6 +655,8 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                     next_quick = next_quick_at(cfg, target)
                 else:
                     logger.info("Scheduled sweep starting (%s)", pending.strftime("%a %H:%M"))
+                    state["last_sweep_slot"] = pending.isoformat()
+                    save_state(state)
                     pending = None
                     next_quick = None  # re-armed once the sweep is done
 
