@@ -246,13 +246,34 @@ def next_quick_at(cfg: dict, after: dt.datetime) -> Optional[dt.datetime]:
     every = int(cfg.get("quick_check_minutes", 0) or 0)
     if not every:
         return None
+    # the grid steps at the finest interval in use; coarser periods of the day
+    # (quick_check_cadence) simply skip the slots off their own beat
+    step = min([every] + [int(m) for _, m in cfg.get("quick_check_cadence", []) if int(m) > 0])
     slot = after.replace(second=0, microsecond=0)
-    slot = slot.replace(minute=(slot.minute // every) * every) + dt.timedelta(minutes=every)
-    for _ in range(2 * 24 * 60 // every):
-        if _within_quick_hours(cfg, slot) and not _collides_with_sweep(cfg, slot):
+    slot = slot.replace(minute=(slot.minute // step) * step) + dt.timedelta(minutes=step)
+    for _ in range(2 * 24 * 60 // step):
+        if (_within_quick_hours(cfg, slot) and _on_cadence(cfg, slot)
+                and not _collides_with_sweep(cfg, slot)):
             return slot
-        slot += dt.timedelta(minutes=every)
+        slot += dt.timedelta(minutes=step)
     return None
+
+
+def _on_cadence(cfg: dict, moment: dt.datetime) -> bool:
+    """Whether a grid slot falls on the beat for its part of the day.
+
+    quick_check_cadence lists [start, minutes] pairs, e.g. [["15:00", 60]]:
+    from 15:00 checks run hourly instead of every quick_check_minutes. Every
+    opening seen so far came in the morning, so the afternoon is thinned out
+    rather than dropped.
+    """
+    interval = int(cfg.get("quick_check_minutes", 0) or 0)
+    for start, minutes in sorted(cfg.get("quick_check_cadence", []), key=lambda c: _parse_hhmm(c[0])):
+        if moment.time() >= _parse_hhmm(start):
+            interval = int(minutes)
+    if interval <= 0:
+        return False
+    return (moment.hour * 60 + moment.minute) % interval == 0
 
 
 def next_sleep_seconds(cfg: dict, now: dt.datetime) -> int:

@@ -112,5 +112,6 @@
   },
   "close_browser_after_quick_check": false,
   "sweep_duration_minutes": 50,
-  "quick_check_offices": []
+  "quick_check_offices": [],
+  "quick_check_cadence": []
 }
