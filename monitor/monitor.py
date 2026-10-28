@@ -768,7 +768,17 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                         logger.info("Next office in %d s: %s", gap, office)
                         time.sleep(gap)
                 try:
-                    result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
+                    try:
+                        result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
+                    except ChromeUnavailable as exc:
+                        # the browser not starting says nothing about the office;
+                        # skipping it cost the 07:00 "Cualquier oficina" pass, the
+                        # most valuable check of the day. One more try first.
+                        logger.warning("Chrome unavailable (%s); retrying %s in 60 s",
+                                       str(exc).splitlines()[0][:80], office)
+                        browser_holder.pop("browser", None)
+                        time.sleep(60)
+                        result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
                     consecutive_errors = 0 if result.status != "error" else consecutive_errors + 1
                 except ChromeUnavailable as exc:
                     logger.error("Chrome unavailable: %s", exc)

@@ -243,25 +243,40 @@ def get_browser(pw: Playwright, browser_cfg: dict) -> Browser:
             _clear_profile_locks(browser_cfg["user_data_dir"])
             if not _launch_and_wait(browser_cfg, cdp_url, 45):
                 raise ChromeUnavailable(f"CDP endpoint {cdp_url} did not come up after launch")
-    try:
-        browser = pw.chromium.connect_over_cdp(cdp_url, timeout=5000)
-    except PWError as first_error:
-        logger.warning("CDP attach failed (%s); assuming a stale browser",
-                       str(first_error).splitlines()[0][:90])
+    # A cold first start of the day answers /json/version long before it answers
+    # the websocket: on 2026-10-28 07:00 the socket connected but stayed silent
+    # past 5 s, the browser was killed as "stale", the relaunch got 8 s, and the
+    # morning's first check was lost - while the same browser attached fine 30 s
+    # later. So give a live endpoint real time before declaring it dead.
+    browser = _try_connect(pw, cdp_url, attempts=2, timeout_ms=15000)
+    if browser is None:
+        logger.warning("CDP attach failed twice; assuming a stale browser")
         _kill_profile_browsers(browser_cfg["user_data_dir"])
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and _cdp_alive(cdp_url, timeout=1):
             time.sleep(0.5)
+        _clear_profile_locks(browser_cfg["user_data_dir"])
         launch_browser(browser_cfg)
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 45
         while time.monotonic() < deadline and not _cdp_alive(cdp_url):
             time.sleep(0.5)
-        try:
-            browser = pw.chromium.connect_over_cdp(cdp_url, timeout=8000)
-        except PWError as exc:
-            raise ChromeUnavailable(f"connect_over_cdp failed after relaunch: {exc}") from exc
+        browser = _try_connect(pw, cdp_url, attempts=2, timeout_ms=20000)
+        if browser is None:
+            raise ChromeUnavailable(f"connect_over_cdp to {cdp_url} failed after relaunch")
     logger.info("Attached to Chrome via CDP (%s)", cdp_url)
     return browser
+
+
+def _try_connect(pw: Playwright, cdp_url: str, attempts: int, timeout_ms: int) -> Optional[Browser]:
+    """Attach over CDP with a few patient attempts; None if every one failed."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return pw.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
+        except PWError as exc:
+            logger.info("CDP attach attempt %d/%d failed: %s", attempt, attempts,
+                        str(exc).splitlines()[0][:90])
+            time.sleep(3)
+    return None
 
 
 def new_tab(browser: Browser) -> Page:
@@ -500,6 +515,37 @@ def wait_any(page: Page, selectors: list[str], timeout: int = 10000) -> Optional
                 pass
         time.sleep(0.25)
     return None
+
+
+SOLICITAR_SELECTORS = ["input#btnEnviar[value='Solicitar Cita']", "input[value='Solicitar Cita']",
+                       "button:has-text('Solicitar')"]
+
+
+def on_options_page(page: Page) -> bool:
+    """True while the "Solicitar / Consultar / Anular" options screen is shown."""
+    try:
+        return bool(page.locator("#btnConsultar").count())
+    except PWError:  # context destroyed mid-navigation: the page is moving on
+        return False
+
+
+def press_solicitar(page: Page, attempts: int = 2, settle_seconds: int = 25) -> bool:
+    """Click "Solicitar Cita" and confirm the options screen was left.
+
+    Returns:
+        True once the options screen is gone, False if it is still there.
+    """
+    for attempt in range(1, attempts + 1):
+        click_any(page, SOLICITAR_SELECTORS)
+        deadline = time.monotonic() + settle_seconds
+        while time.monotonic() < deadline:
+            if not on_options_page(page):
+                return True
+            page.wait_for_timeout(400)
+        if attempt < attempts:
+            logger.info("Still on the options screen after Solicitar Cita - pressing it again")
+            human_wander(page)
+    return not on_options_page(page)
 
 
 def extract_slots(text: str) -> list[tuple[dt.date, str]]:
@@ -918,8 +964,19 @@ def _walk_to_dates(page: Page, cfg: dict, verify: bool, office: Optional[str],
         return CheckResult(status="blocked", detail=txt[:400], screenshot_path=dump(page, "04_blocked"))
 
     # 5. Solicitar Cita
+    # The data page and the options page both carry #btnEnviar ("Aceptar" vs
+    # "Solicitar Cita"). On a slow morning the options page had not arrived yet,
+    # the bare #btnEnviar click landed on the old page or on nothing, and the
+    # walk then sat on the options screen until it was reported as unknown.
+    # So wait for the real button, then confirm the page actually moved on.
+    if not wait_any(page, SOLICITAR_SELECTORS, timeout=45000):
+        txt = page_text(page)
+        if any(m in txt for m in NO_SLOTS_MARKERS):
+            return CheckResult(status="no_slots")
+        if any(b in txt for b in BLOCK_MARKERS):
+            return CheckResult(status="blocked", detail=txt[:400], screenshot_path=dump(page, "05_blocked"))
     step_pause()
-    click_any(page, ["#btnEnviar", "input[value='Solicitar Cita']", "button:has-text('Solicitar')"])
+    press_solicitar(page)
     if verify:
         describe_page(page)
         dump(page, "05_solicitar")
@@ -1049,6 +1106,19 @@ def _walk_to_dates(page: Page, cfg: dict, verify: bool, office: Optional[str],
     # ends up here, still sitting on it. Every one of the three times this site
     # let us past availability, the check died exactly this way, one step short
     # of the dates. So treat the form as a recovery point, not a single shot.
+    # Same idea for the options screen: if the walk is still parked on it, press
+    # "Solicitar Cita" once more and see what comes back.
+    if on_options_page(page):
+        logger.info("Still on the options screen at the dates step - pressing Solicitar Cita")
+        if press_solicitar(page, attempts=1):
+            settle_next()
+            txt = page_text(page)
+            if any(m in txt for m in NO_SLOTS_MARKERS):
+                return CheckResult(status="no_slots")
+            if any(b in txt for b in BLOCK_MARKERS):
+                return CheckResult(status="blocked", detail=txt[:400],
+                                   screenshot_path=dump(page, "07_blocked"))
+
     if page.locator("#txtTelefonoCitado").count():
         logger.info("Still on the contact form at the dates step - filling it now")
         stop = fill_contact_form()
