@@ -548,6 +548,29 @@ def press_solicitar(page: Page, attempts: int = 2, settle_seconds: int = 25) -> 
     return not on_options_page(page)
 
 
+def advance(page: Page, click_selectors: list[str], expect_selectors: list[str],
+            wait_ms: int = 30000, attempts: int = 2) -> bool:
+    """Click a navigation button and wait for the next screen; re-click once if stuck.
+
+    On a slow morning a click can be swallowed (it lands mid-load or times out
+    inside click_any, which reports nothing), and a single 10 s wait then turns
+    an ordinary info page into an "unknown screen" (Alcorcón, 2026-10-30).
+
+    Returns:
+        True once an expected selector is present, False otherwise.
+    """
+    for attempt in range(1, attempts + 1):
+        click_any(page, click_selectors)
+        if wait_any(page, expect_selectors, timeout=wait_ms):
+            return True
+        if attempt < attempts:
+            if not wait_any(page, click_selectors, timeout=500):
+                return False  # moved somewhere unexpected; the caller classifies it
+            logger.info("Page did not advance after %s - clicking again", click_selectors[0])
+            human_wander(page)
+    return False
+
+
 def extract_slots(text: str) -> list[tuple[dt.date, str]]:
     """Extract dd/mm/yyyy (+optional hh:mm) dates from page text."""
     out: list[tuple[dt.date, str]] = []
@@ -909,21 +932,23 @@ def _walk_to_dates(page: Page, cfg: dict, verify: bool, office: Optional[str],
         return CheckResult(status="not_offered", detail=str(exc)[:300])
     logger.info("Tramite selected: %s", label)
     step_pause()
-    click_any(page, ["#btnAceptar", "input[value='Aceptar']", "button:has-text('Aceptar')"])
+    entrar = ["#btnEntrar", "input[value='Entrar']", "button:has-text('Entrar')"]
+    advanced = advance(page, ["#btnAceptar", "input[value='Aceptar']", "button:has-text('Aceptar')"],
+                       entrar)
     if verify:
         describe_page(page)
         dump(page, "02_tramite")
-    if not wait_any(page, ["#btnEntrar", "input[value='Entrar']", "button:has-text('Entrar')"]):
+    if not advanced:
         return unexpected("02_tramite")
     human_wander(page)
 
     # 3. Info page -> Entrar
     step_pause()
-    click_any(page, ["#btnEntrar", "input[value='Entrar']", "button:has-text('Entrar')"])
+    advanced = advance(page, entrar, ["#txtIdCitado", "input[name='txtIdCitado']"])
     if verify:
         describe_page(page)
         dump(page, "03_entrar")
-    if not wait_any(page, ["#txtIdCitado", "input[name='txtIdCitado']"]):
+    if not advanced:
         return unexpected("03_entrar")
     human_wander(page)
 
