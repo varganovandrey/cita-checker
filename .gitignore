@@ -1,0 +1,19 @@
+# Secrets and personal data
+values.json
+monitor/config.json
+monitor/.env
+
+# Runtime artifacts
+monitor/state.json
+monitor/logs/
+monitor/debug/
+monitor/chrome-profile/
+monitor-lite/config.json
+monitor-lite/debug/
+monitor-lite/cita_monitor.log
+logs/
+screenshots/
+downloaded_files/
+__pycache__/
+*.pyc
+nul
