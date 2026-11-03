@@ -433,12 +433,31 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
                 pass
 
 
+def blocked_backoff(cfg: dict, streak: int) -> float:
+    """Minutes to wait after the streak-th block in a row.
+
+    blocked_backoff_steps (e.g. [10, 15]) escalates per consecutive block and
+    stays on the last step. A 90-180 min wait cost whole morning windows, while
+    a sweep resumed 50 min after a block went through all 24 offices cleanly.
+    Without steps, falls back to a random pick from blocked_backoff_minutes.
+    """
+    steps = cfg.get("blocked_backoff_steps") or []
+    if steps:
+        return float(steps[min(streak, len(steps)) - 1])
+    lo, hi = cfg.get("blocked_backoff_minutes", [90, 180])
+    return random.uniform(lo, hi)
+
+
 def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
                   office: str = "") -> bool:
     """Act on one office result. Returns True if slots were announced."""
     min_date = parse_day(cfg["filter"].get("min_date"))
     max_date = parse_day(cfg["filter"].get("max_date"))
     notify_cfg = cfg["notify"]
+
+    # a clean pass through the site ends a run of blocks; an error says nothing
+    if result.status in ("slots", "no_slots", "not_offered"):
+        state["blocked_streak"] = 0
 
     if result.status == "slots":
         good = flow.filter_slots(result.dates, min_date, max_date)
@@ -486,8 +505,9 @@ def handle_result(result: CheckResult, cfg: dict, state: dict, now: dt.datetime,
         state["blocked_notified"] = False
 
     elif result.status == "blocked":
-        lo, hi = cfg["blocked_backoff_minutes"]
-        until = now + dt.timedelta(minutes=random.uniform(lo, hi))
+        streak = int(state.get("blocked_streak", 0) or 0) + 1
+        state["blocked_streak"] = streak
+        until = now + dt.timedelta(minutes=blocked_backoff(cfg, streak))
         state["blocked_until"] = until.isoformat()
         logger.warning("Blocked by site (%s). Backing off until %s",
                        result.detail[:160], until.strftime("%H:%M"))
