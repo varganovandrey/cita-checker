@@ -888,8 +888,15 @@ def _walk_to_dates(page: Page, cfg: dict, verify: bool, office: Optional[str],
     human_wander(page)
     if verify:
         describe_page(page)
-    if not wait_any(page, ["#form", "select"], timeout=10000):
-        return unexpected("00_entry", status_code)
+    # The province list is rendered late on a slow site: on 3 Nov at 12:00 it
+    # was missing after 10 s yet present in the dump a moment later. Wait
+    # longer, then reload once before giving up on the check.
+    if not wait_any(page, ["#form", "select"], timeout=30000):
+        logger.info("Province list not shown after 30 s - reloading the entry page")
+        resp = page.reload(wait_until="domcontentloaded", timeout=45000)
+        status_code = resp.status if resp else status_code
+        if not wait_any(page, ["#form", "select"], timeout=30000):
+            return unexpected("00_entry", status_code)
 
     # 1. Province
     step_pause()

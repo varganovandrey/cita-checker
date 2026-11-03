@@ -380,9 +380,18 @@ def parked_tab_active(browser_holder: dict, cfg: dict) -> bool:
         alive = not page.is_closed()
     except PWError:
         alive = False
-    if alive and time.monotonic() - browser_holder.get("kept_at", 0.0) < limit:
+    # Only a tab with slots is worth holding checks for. A tab kept because the
+    # page was unreadable has already been sent as a screenshot; holding for it
+    # cost the 12:30 check on 3 Nov. Such a tab is closed so they do not pile up.
+    held = browser_holder.get("kept_reason") in ("slots", "verify")
+    if alive and held and time.monotonic() - browser_holder.get("kept_at", 0.0) < limit:
         return True
-    for key in ("kept_page", "kept_at", "kept_tab"):
+    if alive and not held:
+        try:
+            page.close()
+        except PWError:
+            pass
+    for key in ("kept_page", "kept_at", "kept_tab", "kept_reason"):
         browser_holder.pop(key, None)
     return False
 
@@ -420,6 +429,7 @@ def run_check(pw, browser_holder: dict, cfg: dict, verify: bool = False,
             browser_holder["kept_tab"] = True
             browser_holder["kept_page"] = page
             browser_holder["kept_at"] = time.monotonic()
+            browser_holder["kept_reason"] = "verify" if verify else result.status
             try:
                 page.bring_to_front()
             except PWError:
