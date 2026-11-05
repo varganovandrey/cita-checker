@@ -117,5 +117,6 @@
   "blocked_backoff_steps": [
     10,
     15
-  ]
+  ],
+  "watchdog_minutes": 20
 }

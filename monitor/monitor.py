@@ -30,6 +30,7 @@ from playwright.sync_api import sync_playwright
 import flow
 import notify
 import vpn
+import watchdog
 from flow import CheckResult, ChromeUnavailable
 
 BASE_DIR = Path(__file__).parent
@@ -645,7 +646,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 if now < until:
                     nap = min(int((until - now).total_seconds()), 1800)
                     logger.info("Backoff active, sleeping %d min", max(1, nap // 60))
-                    time.sleep(nap)
+                    watchdog.sleep(nap)
                     continue
                 state["blocked_until"] = None
 
@@ -693,7 +694,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                                 target.strftime("%a %H:%M"), cfg["schedule"]["timezone"],
                                 wait // 60, max(1, nap // 60))
                     save_state(state)
-                    time.sleep(nap)
+                    watchdog.sleep(nap)
                     continue
 
                 if resuming:
@@ -715,7 +716,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 nap = next_sleep_seconds(cfg, now)
                 logger.info("Outside activity window, sleeping %d min", max(1, nap // 60))
                 save_state(state)
-                time.sleep(nap)
+                watchdog.sleep(nap)
                 continue
 
             # "Cualquier oficina" first, then a rotating slice of specific
@@ -792,11 +793,11 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                                 f"Продолжу через {chunk_pause} мин.",
                                 silent=True,  # routine chatter must not buzz the phone
                             )
-                        time.sleep(chunk_pause * 60)
+                        watchdog.sleep(chunk_pause * 60)
                     else:
                         gap = random.randint(*cfg.get("office_switch_seconds", [25, 70]))
                         logger.info("Next office in %d s: %s", gap, office)
-                        time.sleep(gap)
+                        watchdog.sleep(gap)
                 try:
                     try:
                         result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
@@ -807,7 +808,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                         logger.warning("Chrome unavailable (%s); retrying %s in 60 s",
                                        str(exc).splitlines()[0][:80], office)
                         browser_holder.pop("browser", None)
-                        time.sleep(60)
+                        watchdog.sleep(60)
                         result = run_check(pw, browser_holder, cfg, verify=verify, office=office)
                     consecutive_errors = 0 if result.status != "error" else consecutive_errors + 1
                 except ChromeUnavailable as exc:
@@ -881,7 +882,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 if result.status == "error":
                     nap = min(60 * 2 ** consecutive_errors, 1800)
                     logger.info("Error backoff: sleeping %d min", max(1, nap // 60))
-                    time.sleep(nap)
+                    watchdog.sleep(nap)
                 continue
 
             extra = 0
@@ -890,7 +891,7 @@ def run_loop(cfg: dict, once: bool, verify: bool,
                 logger.info("Error backoff: +%d s", extra)
             nap = next_sleep_seconds(cfg, dt.datetime.now(tz)) + extra
             logger.info("Next check in %d min", max(1, nap // 60))
-            time.sleep(nap)
+            watchdog.sleep(nap)
 
     exit_codes = {"slots": 0, "no_slots": 1, "not_offered": 1, "blocked": 2, "error": 3}
     return exit_codes.get(last_status, 3)
@@ -923,6 +924,17 @@ def claim_singleton() -> bool:
         return False
     _singleton_socket = sock  # held for the process lifetime
     return True
+
+
+def release_singleton() -> None:
+    """Free the singleton port so a replacement daemon can claim it."""
+    global _singleton_socket
+    if _singleton_socket is not None:
+        try:
+            _singleton_socket.close()
+        except OSError:
+            pass
+        _singleton_socket = None
 
 
 def run_discovery(cfg: dict) -> int:
@@ -1030,6 +1042,10 @@ def main() -> int:
     if daemon and not claim_singleton():
         logger.info("Another monitor instance is already running - exiting")
         return 0
+    if daemon:
+        watchdog.start(float(cfg.get("watchdog_minutes", 20)), LOG_DIR / "monitor.log",
+                       release=release_singleton,
+                       alert=lambda text: notify.send_telegram(text, silent=True))
 
     try:
         return run_loop(cfg, once=args.once or bool(override), verify=args.verify,
